@@ -5,21 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="description" content="Personalised AI mock interview practice" />
   <title>Interview Practice</title>
-  <link rel="stylesheet" href="styles.css?v=3.0" />
+  <link rel="stylesheet" href="styles.css?v=3.2" />
+  <style>
+    .setup-screen{min-height:100vh}
+    .interview-screen{min-height:100vh}
+    .interview-room{min-height:calc(100vh - 48px)}
+    @media(max-width:760px){.interview-room{min-height:100vh}}
+  </style>
   <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand-lockup">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M6 9.5a6 6 0 0 1 12 0v5a6 6 0 0 1-12 0z"/><path d="M9 9.5v5a3 3 0 0 0 6 0v-5"/><path d="M4 14.5a8 8 0 0 0 16 0"/><path d="M12 22v-3"/></svg>
-      </span>
-      <span>Interview Practice</span>
-    </div>
-    <div class="connection" id="connectionStatus">Connecting...</div>
-  </header>
-
   <main>
     <section id="setupScreen" class="screen active setup-screen">
       <div class="setup-shell">
@@ -98,9 +94,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
               Hear again
             </button>
-            <button id="doneAnswerButton" class="button answer-done" type="button" disabled>
-              I’m done
-            </button>
+            <button id="doneAnswerButton" class="button answer-done" type="button" disabled>I’m done</button>
           </div>
         </div>
       </div>
@@ -118,9 +112,7 @@
           <button id="downloadPdfButton" class="button primary" type="button">Download PDF</button>
         </div>
         <div id="reportContent" class="report-content"></div>
-        <div class="restart-row">
-          <button id="restartButton" class="button secondary" type="button">Start another interview</button>
-        </div>
+        <div class="restart-row"><button id="restartButton" class="button secondary" type="button">Start another interview</button></div>
       </div>
     </section>
   </main>
@@ -133,10 +125,8 @@
   </div>
 
   <div id="toast" class="toast hidden" role="status"></div>
-
   <footer>Generated feedback should be reviewed and adapted to your genuine experience.</footer>
-  <script src="config.js?v=3.0"></script>
-  <script src="app.js?v=3.0"></script>
-  <script src="session-stop-fix.js?v=3.1"></script>
+  <script src="config.js?v=3.2"></script>
+  <script src="app.js?v=3.2"></script>
 </body>
 </html>
