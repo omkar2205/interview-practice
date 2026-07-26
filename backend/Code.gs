@@ -1,12 +1,30 @@
 const CONFIG = {
   GEMINI_MODEL: 'gemini-3.5-flash',
+  GEMINI_TTS_MODEL: 'gemini-3.1-flash-tts-preview',
+  GEMINI_TTS_VOICE: 'Sulafat',
   GROQ_TEXT_MODEL: 'openai/gpt-oss-120b',
   GROQ_TRANSCRIBE_MODEL: 'whisper-large-v3-turbo',
   DEFAULT_MIN_QUESTIONS: 8,
   DEFAULT_TARGET_QUESTIONS: 12,
   DEFAULT_MAX_QUESTIONS: 16,
-  ABSOLUTE_MAX_QUESTIONS: 20
+  ABSOLUTE_MAX_QUESTIONS: 20,
+  MAX_QUESTION_WORDS: 20
 };
+
+const QUESTION_RULES = `
+INTERVIEW QUESTION STYLE:
+- Ask exactly one question at a time.
+- Use simple, natural spoken English.
+- Keep the question under 20 words.
+- Ask about one idea only.
+- Be direct. Do not add an introduction, explanation or coaching.
+- Do not combine several tasks with "and".
+- Do not ask the candidate to cover situation, action and result in one question.
+- Use one question mark only.
+- Make the question specific to the CV, job description or the candidate's previous answer.
+- Good examples: "What interested you in this role?"; "How did you improve the admissions process?"; "What changed after you introduced that tracker?"
+- Bad example: "Can you explain the situation, what your role was, what actions you took, and what the final outcome was?"
+`;
 
 function doGet() {
   return jsonResponse_({
@@ -14,8 +32,9 @@ function doGet() {
     data: {
       service: 'Interview Practice API',
       status: 'ready',
-      version: '2.1-current-models',
+      version: '3.0-voice-flow',
       geminiModel: CONFIG.GEMINI_MODEL,
+      ttsModel: CONFIG.GEMINI_TTS_MODEL,
       groqModel: CONFIG.GROQ_TEXT_MODEL
     }
   });
@@ -29,13 +48,17 @@ function doPost(e) {
       case 'health':
         data = {
           status: 'ready',
-          version: '2.1-current-models',
+          version: '3.0-voice-flow',
           geminiModel: CONFIG.GEMINI_MODEL,
+          ttsModel: CONFIG.GEMINI_TTS_MODEL,
           groqModel: CONFIG.GROQ_TEXT_MODEL
         };
         break;
       case 'prepareInterview':
         data = prepareInterview_(body);
+        break;
+      case 'synthesiseSpeech':
+        data = synthesiseSpeechWithGemini_(body.text);
         break;
       case 'transcribe':
         data = transcribeWithGroq_(body.audioBase64, body.mimeType);
@@ -67,7 +90,7 @@ function prepareInterview_(body) {
   }
 
   const policy = normalisePolicy_(body);
-  const prompt = `You are designing a realistic voice-only mock job interview. Analyse the candidate CV and exact job description before asking anything.
+  const prompt = `You are designing a realistic spoken mock job interview. Analyse the candidate CV and exact job description.
 
 CV:
 ${cvText}
@@ -104,27 +127,66 @@ Return strict JSON only:
   }
 }
 
-Interview policy:
-- Minimum questions: ${policy.minQuestions}
-- Normal target: ${policy.targetQuestions}
-- Maximum questions: ${policy.maxQuestions}
-- Later questions are generated dynamically from actual answers.
+Interview policy: minimum ${policy.minQuestions}, normal target ${policy.targetQuestions}, maximum ${policy.maxQuestions}.
+Later questions will be generated from the candidate's actual answers.
 
 Rules:
 - Extract the real target role and organisation where available.
 - Build 6 to 10 specific competencies from the CV and JD, ranked by importance.
-- Use actual projects, tools, responsibilities, sectors, achievements and requirements.
-- Never invent candidate experience, employers, qualifications, tools or results.
-- Make the first question tailored and substantial. Avoid a completely generic opening.
-- Generate only the first question, not a fixed list.`;
+- Use actual projects, tools, responsibilities, sectors, achievements and role requirements.
+- Never invent experience, employers, qualifications, tools or results.
+- Generate only the first question, not a fixed list.
+- The opening question must reference either the target role, organisation, or a clear CV strength.
+${QUESTION_RULES}`;
 
   const result = callGeminiJson_(prompt);
   if (!result.profile || !result.blueprint || !isQuestion_(result.firstQuestion)) {
     throw new Error('Gemini returned an invalid interview setup.');
   }
+  result.firstQuestion = normaliseQuestion_(result.firstQuestion);
   result.policy = policy;
   logSession_('PREPARED', result.profile.targetRole || '', policy.targetQuestions, '');
   return result;
+}
+
+function synthesiseSpeechWithGemini_(text) {
+  text = cleanText_(text, 600);
+  if (!text) throw new Error('No question text was supplied for speech.');
+
+  const key = requiredProperty_('GEMINI_API_KEY');
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+    encodeURIComponent(CONFIG.GEMINI_TTS_MODEL) + ':generateContent?key=' + encodeURIComponent(key);
+
+  const voicePrompt = `Read the interview question exactly as written. Use a warm, calm, professional British English voice. Speak naturally at a moderate pace. Do not add or remove words.\n\n${text}`;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({
+      contents: [{ parts: [{ text: voicePrompt }] }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: CONFIG.GEMINI_TTS_VOICE }
+          }
+        }
+      }
+    }),
+    muteHttpExceptions: true
+  });
+
+  const parsed = parseHttpJson_(response, 'Gemini voice');
+  const part = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content &&
+    parsed.candidates[0].content.parts && parsed.candidates[0].content.parts[0];
+  const inlineData = part && (part.inlineData || part.inline_data);
+  if (!inlineData || !inlineData.data) throw new Error('Gemini voice returned no audio.');
+
+  return {
+    audioBase64: inlineData.data,
+    mimeType: inlineData.mimeType || inlineData.mime_type || 'audio/L16;rate=24000',
+    sampleRate: 24000,
+    voice: CONFIG.GEMINI_TTS_VOICE
+  };
 }
 
 function transcribeWithGroq_(audioBase64, mimeType) {
@@ -143,7 +205,8 @@ function transcribeWithGroq_(audioBase64, mimeType) {
       file: blob,
       model: CONFIG.GROQ_TRANSCRIBE_MODEL,
       response_format: 'json',
-      language: 'en'
+      language: 'en',
+      prompt: 'Transcribe a job interview answer accurately. Preserve names, employers, tools and role-specific terminology.'
     },
     muteHttpExceptions: true
   });
@@ -153,7 +216,7 @@ function transcribeWithGroq_(audioBase64, mimeType) {
 }
 
 function reviewAndContinueWithGroq_(body) {
-  const currentQuestion = body.question || body.currentQuestion || {};
+  const currentQuestion = normaliseQuestion_(body.question || body.currentQuestion || {});
   const transcript = cleanText_(body.transcript, 18000);
   if (!isQuestion_(currentQuestion)) throw new Error('The current question is missing.');
   if (!transcript) throw new Error('The answer transcript is empty.');
@@ -164,7 +227,7 @@ function reviewAndContinueWithGroq_(body) {
   const blueprint = body.blueprint || {};
   const history = compactHistory_(previousAnswers, 10);
 
-  const prompt = `You are running a realistic adaptive mock interview. Privately evaluate the current answer, track competency coverage, and choose the most useful next question.
+  const prompt = `You are running a realistic adaptive mock interview. Privately evaluate the current answer, update competency coverage, and choose the next question.
 
 CANDIDATE PROFILE:
 ${JSON.stringify(body.profile || {})}
@@ -216,19 +279,22 @@ Return strict JSON only:
   }
 }
 
-Rules:
+Evaluation rules:
 - Scores are 1 to 5. Be constructive, specific and honest.
 - Improved responses may use only facts in the profile, CV evidence or candidate answer.
 - Never invent metrics, employers, projects, qualifications or responsibilities.
-- Base the next question on the answer, CV and a specific JD requirement.
-- Ask a direct follow-up when the answer is vague, lacks personal action/result, or introduces a claim worth probing.
-- A follow-up must explicitly connect to something just said.
-- Never ask consecutive follow-ups on the same answer.
-- Avoid repeating or lightly rewording earlier questions.
+
+Adaptive interview rules:
+- Base the next question on the answer, CV and one specific JD requirement.
+- If the answer is vague, ask one short follow-up about the single most important missing detail.
+- If the candidate mentions a useful claim, ask one direct question about that claim.
+- Never ask consecutive follow-ups about the same answer.
+- Avoid repeated or lightly reworded questions.
 - Do not ask more than two questions on one competency unless it is critical and still weak.
 - Do not reveal coaching feedback in the next question.
 - Never finish before ${policy.minQuestions}; finish at ${policy.maxQuestions}.
-- Around ${policy.targetQuestions}, finish only if critical/high-priority competencies have reasonable coverage.`;
+- Around ${policy.targetQuestions}, finish only if critical and high-priority competencies have reasonable coverage.
+${QUESTION_RULES}`;
 
   const result = callGroqJson_(prompt);
   const evaluation = normaliseEvaluation_(result.evaluation || result);
@@ -247,6 +313,7 @@ Rules:
   if (!shouldFinish && !isQuestion_(nextQuestion)) {
     nextQuestion = fallbackNextQuestion_(blueprint, currentQuestion, history);
   }
+  if (!shouldFinish) nextQuestion = normaliseQuestion_(nextQuestion);
 
   return {
     evaluation: evaluation,
@@ -266,7 +333,7 @@ function finaliseReportWithGemini_(body) {
   const reportAnswers = answers.map(function(answer, index) {
     return {
       number: index + 1,
-      question: cleanText_(answer.question, 1500),
+      question: cleanText_(answer.question, 1000),
       category: cleanText_(answer.category, 120),
       competency: cleanText_(answer.competency, 200),
       transcript: cleanText_(answer.transcript, 7000),
@@ -346,7 +413,10 @@ function callGroqJson_(prompt) {
     headers: { Authorization: 'Bearer ' + key },
     payload: JSON.stringify({
       model: CONFIG.GROQ_TEXT_MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: 'You are a concise professional interviewer. Follow every output-format and question-length rule exactly.' },
+        { role: 'user', content: prompt }
+      ],
       reasoning_effort: 'low',
       response_format: { type: 'json_object' }
     }),
@@ -367,6 +437,37 @@ function normalisePolicy_(source) {
   const targetQuestions = clampNumber_(source.targetQuestions, minQuestions,
     maxQuestions, CONFIG.DEFAULT_TARGET_QUESTIONS);
   return { minQuestions: minQuestions, targetQuestions: targetQuestions, maxQuestions: maxQuestions };
+}
+
+function normaliseQuestion_(value) {
+  value = value || {};
+  let question = cleanText_(value.question, 700)
+    .replace(/^question\s*\d*\s*[:.\-]\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const firstQuestionMark = question.indexOf('?');
+  if (firstQuestionMark >= 0) question = question.slice(0, firstQuestionMark + 1);
+
+  let words = question.replace(/\?$/, '').split(/\s+/).filter(Boolean);
+  if (words.length > CONFIG.MAX_QUESTION_WORDS) {
+    const firstClause = question.replace(/\?$/, '').split(/,|;|\band\b/i)[0].trim();
+    const clauseWords = firstClause.split(/\s+/).filter(Boolean);
+    words = clauseWords.length >= 5 && clauseWords.length <= CONFIG.MAX_QUESTION_WORDS
+      ? clauseWords
+      : words.slice(0, CONFIG.MAX_QUESTION_WORDS);
+    question = words.join(' ').replace(/[,:;\-]+$/, '') + '?';
+  } else if (question && !/[?]$/.test(question)) {
+    question = question.replace(/[.!]+$/, '') + '?';
+  }
+
+  return {
+    question: question,
+    category: cleanText_(value.category, 100) || 'role-fit',
+    competency: cleanText_(value.competency, 180) || 'role suitability',
+    purpose: cleanText_(value.purpose, 500),
+    isFollowUp: Boolean(value.isFollowUp)
+  };
 }
 
 function normaliseEvaluation_(value) {
@@ -397,7 +498,7 @@ function compactHistory_(answers, limit) {
   return answers.slice(Math.max(0, answers.length - limit)).map(function(answer, index) {
     return {
       number: answers.length - Math.min(answers.length, limit) + index + 1,
-      question: cleanText_(answer.question, 1200),
+      question: cleanText_(answer.question, 500),
       category: cleanText_(answer.category, 100),
       competency: cleanText_(answer.competency, 180),
       isFollowUp: Boolean(answer.isFollowUp),
@@ -414,24 +515,19 @@ function fallbackNextQuestion_(blueprint, currentQuestion, history) {
   let chosen = competencies.find(function(item) {
     return item && item.name && used.indexOf(String(item.name).toLowerCase()) === -1;
   });
-  if (!chosen) {
-    chosen = competencies[0] || {
-      name: 'role suitability',
-      whyItMatters: 'the requirements of the role'
-    };
-  }
-  return {
-    question: 'Can you give a specific example that demonstrates your ' + chosen.name +
-      ', explain what you personally did, and describe the outcome?',
+  if (!chosen) chosen = competencies[0] || { name: 'role suitability', whyItMatters: '' };
+
+  return normaliseQuestion_({
+    question: 'What is your strongest example of ' + chosen.name + '?',
     category: 'role-fit',
     competency: chosen.name || 'role suitability',
     purpose: chosen.whyItMatters || 'Assess evidence relevant to the role.',
     isFollowUp: false
-  };
+  });
 }
 
 function isQuestion_(value) {
-  return Boolean(value && typeof value.question === 'string' && value.question.trim().length > 8);
+  return Boolean(value && typeof value.question === 'string' && value.question.trim().length > 5);
 }
 
 function stringArray_(value, max) {
