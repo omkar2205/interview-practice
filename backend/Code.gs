@@ -1,6 +1,6 @@
 const CONFIG = {
-  GEMINI_MODEL: 'gemini-2.5-flash',
-  GROQ_TEXT_MODEL: 'llama-3.3-70b-versatile',
+  GEMINI_MODEL: 'gemini-3.5-flash',
+  GROQ_TEXT_MODEL: 'openai/gpt-oss-120b',
   GROQ_TRANSCRIBE_MODEL: 'whisper-large-v3-turbo',
   DEFAULT_MIN_QUESTIONS: 8,
   DEFAULT_TARGET_QUESTIONS: 12,
@@ -14,7 +14,9 @@ function doGet() {
     data: {
       service: 'Interview Practice API',
       status: 'ready',
-      version: '2.0-dynamic'
+      version: '2.1-current-models',
+      geminiModel: CONFIG.GEMINI_MODEL,
+      groqModel: CONFIG.GROQ_TEXT_MODEL
     }
   });
 }
@@ -22,12 +24,15 @@ function doGet() {
 function doPost(e) {
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    const action = body.action || '';
     let data;
-
-    switch (action) {
+    switch (body.action || '') {
       case 'health':
-        data = { status: 'ready', version: '2.0-dynamic' };
+        data = {
+          status: 'ready',
+          version: '2.1-current-models',
+          geminiModel: CONFIG.GEMINI_MODEL,
+          groqModel: CONFIG.GROQ_TEXT_MODEL
+        };
         break;
       case 'prepareInterview':
         data = prepareInterview_(body);
@@ -45,9 +50,8 @@ function doPost(e) {
         data = finaliseReportWithGemini_(body);
         break;
       default:
-        throw new Error('Unknown action: ' + action);
+        throw new Error('Unknown action: ' + (body.action || ''));
     }
-
     return jsonResponse_({ ok: true, data: data });
   } catch (err) {
     console.error(err && err.stack ? err.stack : err);
@@ -63,7 +67,7 @@ function prepareInterview_(body) {
   }
 
   const policy = normalisePolicy_(body);
-  const prompt = `You are designing a realistic, voice-only mock job interview. Analyse the candidate CV and the exact job description before asking anything.
+  const prompt = `You are designing a realistic voice-only mock job interview. Analyse the candidate CV and exact job description before asking anything.
 
 CV:
 ${cvText}
@@ -71,7 +75,7 @@ ${cvText}
 JOB DESCRIPTION:
 ${jdText}
 
-Return strict JSON only in this shape:
+Return strict JSON only:
 {
   "profile": {
     "candidateName": "",
@@ -83,15 +87,13 @@ Return strict JSON only in this shape:
   },
   "blueprint": {
     "roleRequirements": ["specific requirement from the JD"],
-    "competencies": [
-      {
-        "name": "",
-        "priority": "critical|high|standard",
-        "whyItMatters": "",
-        "cvEvidence": "",
-        "jdEvidence": ""
-      }
-    ]
+    "competencies": [{
+      "name": "",
+      "priority": "critical|high|standard",
+      "whyItMatters": "",
+      "cvEvidence": "",
+      "jdEvidence": ""
+    }]
   },
   "firstQuestion": {
     "question": "",
@@ -106,22 +108,20 @@ Interview policy:
 - Minimum questions: ${policy.minQuestions}
 - Normal target: ${policy.targetQuestions}
 - Maximum questions: ${policy.maxQuestions}
-- Later questions will be generated dynamically from the candidate's actual responses.
+- Later questions are generated dynamically from actual answers.
 
 Rules:
 - Extract the real target role and organisation where available.
 - Build 6 to 10 specific competencies from the CV and JD, ranked by importance.
-- Use actual projects, responsibilities, tools, sectors, achievements and role requirements from the documents.
-- Do not invent candidate experience, employers, qualifications, tools or results.
-- The first question must be natural but tailored to the candidate and role. Avoid a completely generic 'tell me about yourself' question.
-- The first question must invite a substantial spoken answer, not yes/no.
-- Do not generate a fixed list of questions and do not include answers or feedback.`;
+- Use actual projects, tools, responsibilities, sectors, achievements and requirements.
+- Never invent candidate experience, employers, qualifications, tools or results.
+- Make the first question tailored and substantial. Avoid a completely generic opening.
+- Generate only the first question, not a fixed list.`;
 
   const result = callGeminiJson_(prompt);
   if (!result.profile || !result.blueprint || !isQuestion_(result.firstQuestion)) {
     throw new Error('Gemini returned an invalid interview setup.');
   }
-
   result.policy = policy;
   logSession_('PREPARED', result.profile.targetRole || '', policy.targetQuestions, '');
   return result;
@@ -129,11 +129,12 @@ Rules:
 
 function transcribeWithGroq_(audioBase64, mimeType) {
   if (!audioBase64) throw new Error('No audio was received.');
-
   const key = requiredProperty_('GROQ_API_KEY');
-  const bytes = Utilities.base64Decode(audioBase64);
-  const ext = mimeToExtension_(mimeType);
-  const blob = Utilities.newBlob(bytes, mimeType || 'audio/webm', 'answer.' + ext);
+  const blob = Utilities.newBlob(
+    Utilities.base64Decode(audioBase64),
+    mimeType || 'audio/webm',
+    'answer.' + mimeToExtension_(mimeType)
+  );
 
   const response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'post',
@@ -160,14 +161,13 @@ function reviewAndContinueWithGroq_(body) {
   const previousAnswers = Array.isArray(body.previousAnswers) ? body.previousAnswers : [];
   const questionNumber = Math.max(1, Number(body.questionNumber || previousAnswers.length + 1));
   const policy = normalisePolicy_(body.policy || body);
-  const profile = body.profile || {};
   const blueprint = body.blueprint || {};
   const history = compactHistory_(previousAnswers, 10);
 
-  const prompt = `You are running a realistic adaptive mock interview and coaching the candidate privately after the session. First evaluate the current answer, then decide the most useful next interview question.
+  const prompt = `You are running a realistic adaptive mock interview. Privately evaluate the current answer, track competency coverage, and choose the most useful next question.
 
 CANDIDATE PROFILE:
-${JSON.stringify(profile)}
+${JSON.stringify(body.profile || {})}
 
 INTERVIEW BLUEPRINT:
 ${JSON.stringify(blueprint)}
@@ -175,7 +175,7 @@ ${JSON.stringify(blueprint)}
 JOB DESCRIPTION:
 ${cleanText_(body.jdText, 18000)}
 
-QUESTIONS AND ANSWERS ALREADY COMPLETED:
+PREVIOUS QUESTIONS AND ANSWERS:
 ${JSON.stringify(history)}
 
 CURRENT QUESTION NUMBER: ${questionNumber}
@@ -185,21 +185,18 @@ ${JSON.stringify(currentQuestion)}
 CURRENT ANSWER:
 ${transcript}
 
-INTERVIEW POLICY:
-- Minimum: ${policy.minQuestions}
-- Normal target: ${policy.targetQuestions}
-- Maximum: ${policy.maxQuestions}
+POLICY: minimum ${policy.minQuestions}, target ${policy.targetQuestions}, maximum ${policy.maxQuestions}.
 
 Return strict JSON only:
 {
   "evaluation": {
-    "scores": {"relevance": 1, "structure": 1, "specificity": 1, "clarity": 1},
+    "scores": {"relevance":1,"structure":1,"specificity":1,"clarity":1},
     "strengths": [""],
     "improvements": [""],
     "framework": "STAR|PREP|Past-Present-Future|Direct",
     "improvedResponse": "",
-    "answerEvidence": ["facts actually stated by the candidate"],
-    "missingEvidence": ["important detail not yet demonstrated"]
+    "answerEvidence": ["facts actually stated"],
+    "missingEvidence": ["important missing detail"]
   },
   "coverage": {
     "coveredCompetencies": [""],
@@ -219,56 +216,51 @@ Return strict JSON only:
   }
 }
 
-Evaluation rules:
-- Score each dimension from 1 to 5.
-- Be constructive, specific and honest.
-- The improved response must use only facts found in the CV/profile or current answer.
-- Do not invent metrics, employers, projects, qualifications or responsibilities.
-- Keep the improved response natural and normally under 200 words.
-
-Dynamic next-question rules:
-- Base the next question on the candidate's actual answer, the CV, and a specific requirement in the JD.
-- Prefer a direct follow-up when the answer is vague, lacks the candidate's personal action/result, introduces an important claim, or contains a useful detail worth probing.
-- A follow-up should explicitly connect to a detail the candidate just mentioned.
-- Never ask two consecutive follow-ups on the same answer. If the current question has isFollowUp=true, move to another priority competency.
+Rules:
+- Scores are 1 to 5. Be constructive, specific and honest.
+- Improved responses may use only facts in the profile, CV evidence or candidate answer.
+- Never invent metrics, employers, projects, qualifications or responsibilities.
+- Base the next question on the answer, CV and a specific JD requirement.
+- Ask a direct follow-up when the answer is vague, lacks personal action/result, or introduces a claim worth probing.
+- A follow-up must explicitly connect to something just said.
+- Never ask consecutive follow-ups on the same answer.
 - Avoid repeating or lightly rewording earlier questions.
-- Do not ask more than two questions on the same competency unless it is critical and remains weak.
-- Do not reveal coaching feedback inside the next interview question.
-- Do not finish before ${policy.minQuestions} completed questions.
-- Around question ${policy.targetQuestions}, finish only when critical/high-priority competencies have reasonable coverage and no important claim needs probing.
-- At question ${policy.maxQuestions}, finish regardless.
-- The next question must be substantial, specific and suitable for spoken practice.`;
+- Do not ask more than two questions on one competency unless it is critical and still weak.
+- Do not reveal coaching feedback in the next question.
+- Never finish before ${policy.minQuestions}; finish at ${policy.maxQuestions}.
+- Around ${policy.targetQuestions}, finish only if critical/high-priority competencies have reasonable coverage.`;
 
   const result = callGroqJson_(prompt);
-  result.evaluation = normaliseEvaluation_(result.evaluation || result);
-  result.coverage = normaliseCoverage_(result.coverage);
-  result.decision = result.decision || {};
+  const evaluation = normaliseEvaluation_(result.evaluation || result);
+  const coverage = normaliseCoverage_(result.coverage);
+  const decision = result.decision || {};
 
-  let shouldFinish = Boolean(result.decision.shouldFinish);
+  let shouldFinish = Boolean(decision.shouldFinish);
   if (questionNumber < policy.minQuestions) shouldFinish = false;
   if (questionNumber >= policy.maxQuestions) shouldFinish = true;
-
-  if (questionNumber < policy.targetQuestions) {
-    const gaps = result.coverage.remainingCompetencies.length + result.coverage.weakCompetencies.length;
-    if (gaps > 0) shouldFinish = false;
+  if (questionNumber < policy.targetQuestions &&
+      coverage.remainingCompetencies.length + coverage.weakCompetencies.length > 0) {
+    shouldFinish = false;
   }
 
-  let nextQuestion = result.decision.nextQuestion;
+  let nextQuestion = decision.nextQuestion;
   if (!shouldFinish && !isQuestion_(nextQuestion)) {
     nextQuestion = fallbackNextQuestion_(blueprint, currentQuestion, history);
   }
 
   return {
-    evaluation: result.evaluation,
-    coverage: result.coverage,
+    evaluation: evaluation,
+    coverage: coverage,
     shouldFinish: shouldFinish,
-    finishReason: String(result.decision.reason || ''),
+    finishReason: String(decision.reason || ''),
     nextQuestion: shouldFinish ? null : nextQuestion
   };
 }
 
 function finaliseReportWithGemini_(body) {
-  const answers = Array.isArray(body.answers) ? body.answers.slice(0, CONFIG.ABSOLUTE_MAX_QUESTIONS) : [];
+  const answers = Array.isArray(body.answers)
+    ? body.answers.slice(0, CONFIG.ABSOLUTE_MAX_QUESTIONS)
+    : [];
   if (!answers.length) throw new Error('No completed answers were supplied.');
 
   const reportAnswers = answers.map(function(answer, index) {
@@ -282,7 +274,7 @@ function finaliseReportWithGemini_(body) {
     };
   });
 
-  const prompt = `Create a detailed personal interview preparation report from this adaptive mock interview. Be constructive, specific and evidence-based. Do not invent experience, responsibilities or numerical results.
+  const prompt = `Create a detailed personal interview preparation report from this adaptive mock interview. Be constructive, specific and evidence-based. Never invent experience, responsibilities or results.
 
 PROFILE:
 ${JSON.stringify(body.profile || {})}
@@ -301,7 +293,7 @@ ${JSON.stringify(reportAnswers)}
 
 Return strict JSON only:
 {
-  "scores": {"overall": 0, "relevance": 1, "structure": 1, "examples": 1, "clarity": 1},
+  "scores": {"overall":0,"relevance":1,"structure":1,"examples":1,"clarity":1},
   "summary": "",
   "strengths": [""],
   "improvements": [""],
@@ -313,13 +305,14 @@ Return strict JSON only:
 
 Rules:
 - Overall is 0 to 100; other scores are 1 to 5.
-- Reflect performance across the full interview, not only the final answer.
+- Reflect the full interview, not only the final answer.
 - Give 3 to 6 practical items in strengths, improvements and practicePlan.
 - Identify patterns such as generic answers, missing results, weak role evidence, repetition or strong examples.
-- The report should help the candidate prepare genuine answers, not memorise invented claims.`;
+- Help the candidate prepare genuine answers rather than memorise invented claims.`;
 
   const report = callGeminiJson_(prompt);
-  logSession_('COMPLETED', (body.profile && body.profile.targetRole) || '', answers.length, report.scores && report.scores.overall);
+  logSession_('COMPLETED', (body.profile && body.profile.targetRole) || '', answers.length,
+    report.scores && report.scores.overall);
   return report;
 }
 
@@ -328,42 +321,35 @@ function callGeminiJson_(prompt) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
     encodeURIComponent(CONFIG.GEMINI_MODEL) + ':generateContent?key=' + encodeURIComponent(key);
 
-  const payload = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.25,
-      responseMimeType: 'application/json'
-    }
-  };
-
   const response = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' }
+    }),
     muteHttpExceptions: true
   });
 
   const parsed = parseHttpJson_(response, 'Gemini');
-  const text = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content &&
-    parsed.candidates[0].content.parts && parsed.candidates[0].content.parts[0] &&
-    parsed.candidates[0].content.parts[0].text;
+  const candidate = parsed.candidates && parsed.candidates[0];
+  const parts = candidate && candidate.content && candidate.content.parts;
+  const text = parts && parts[0] && parts[0].text;
   return parseJsonText_(text);
 }
 
 function callGroqJson_(prompt) {
   const key = requiredProperty_('GROQ_API_KEY');
-  const payload = {
-    model: CONFIG.GROQ_TEXT_MODEL,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.25,
-    response_format: { type: 'json_object' }
-  };
-
   const response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + key },
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify({
+      model: CONFIG.GROQ_TEXT_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      reasoning_effort: 'low',
+      response_format: { type: 'json_object' }
+    }),
     muteHttpExceptions: true
   });
 
@@ -376,13 +362,11 @@ function callGroqJson_(prompt) {
 function normalisePolicy_(source) {
   source = source || {};
   const minQuestions = clampNumber_(source.minQuestions, 5, 12, CONFIG.DEFAULT_MIN_QUESTIONS);
-  const maxQuestions = clampNumber_(source.maxQuestions, minQuestions, CONFIG.ABSOLUTE_MAX_QUESTIONS, CONFIG.DEFAULT_MAX_QUESTIONS);
-  const targetQuestions = clampNumber_(source.targetQuestions, minQuestions, maxQuestions, CONFIG.DEFAULT_TARGET_QUESTIONS);
-  return {
-    minQuestions: minQuestions,
-    targetQuestions: targetQuestions,
-    maxQuestions: maxQuestions
-  };
+  const maxQuestions = clampNumber_(source.maxQuestions, minQuestions,
+    CONFIG.ABSOLUTE_MAX_QUESTIONS, CONFIG.DEFAULT_MAX_QUESTIONS);
+  const targetQuestions = clampNumber_(source.targetQuestions, minQuestions,
+    maxQuestions, CONFIG.DEFAULT_TARGET_QUESTIONS);
+  return { minQuestions: minQuestions, targetQuestions: targetQuestions, maxQuestions: maxQuestions };
 }
 
 function normaliseEvaluation_(value) {
@@ -424,15 +408,21 @@ function compactHistory_(answers, limit) {
 }
 
 function fallbackNextQuestion_(blueprint, currentQuestion, history) {
-  const competencies = blueprint && Array.isArray(blueprint.competencies) ? blueprint.competencies : [];
+  const competencies = blueprint && Array.isArray(blueprint.competencies)
+    ? blueprint.competencies : [];
   const used = history.map(function(item) { return String(item.competency || '').toLowerCase(); });
   let chosen = competencies.find(function(item) {
     return item && item.name && used.indexOf(String(item.name).toLowerCase()) === -1;
   });
-  if (!chosen) chosen = competencies[0] || { name: 'role suitability', whyItMatters: 'the requirements of the role' };
-
+  if (!chosen) {
+    chosen = competencies[0] || {
+      name: 'role suitability',
+      whyItMatters: 'the requirements of the role'
+    };
+  }
   return {
-    question: 'Can you give a specific example that demonstrates your ' + chosen.name + ', explain what you personally did, and describe the outcome?',
+    question: 'Can you give a specific example that demonstrates your ' + chosen.name +
+      ', explain what you personally did, and describe the outcome?',
     category: 'role-fit',
     competency: chosen.name || 'role suitability',
     purpose: chosen.whyItMatters || 'Assess evidence relevant to the role.',
@@ -458,7 +448,6 @@ function clampNumber_(value, min, max, fallback) {
 function logSession_(status, targetRole, questionCount, score) {
   const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
   if (!id) return;
-
   try {
     const ss = SpreadsheetApp.openById(id);
     let sheet = ss.getSheetByName('Sessions');
