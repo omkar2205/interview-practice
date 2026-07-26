@@ -5,13 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="description" content="Personalised AI mock interview practice" />
   <title>Interview Practice</title>
-  <link rel="stylesheet" href="styles.css?v=3.3" />
-  <style>
-    .setup-screen{min-height:100vh}
-    .interview-screen{min-height:100vh}
-    .interview-room{min-height:calc(100vh - 48px)}
-    @media(max-width:760px){.interview-room{min-height:100vh}}
-  </style>
+  <link rel="stylesheet" href="styles.css?v=4.0" />
   <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
@@ -22,7 +16,7 @@
         <div class="setup-intro">
           <p class="kicker">Personalised interview preparation</p>
           <h1>Practise for the role you want.</h1>
-          <p>Upload your CV and add the job description. Your interview will adapt to your experience and responses.</p>
+          <p>Upload your CV and add the job description. The interview will follow a realistic structure while adapting to your evidence.</p>
         </div>
 
         <div class="setup-card">
@@ -67,10 +61,18 @@
         <div class="session-topbar">
           <div class="session-meta">
             <span id="questionCounter" class="session-pill">Question 1</span>
-            <span class="live-label"><i></i>Session in progress</span>
+            <span class="live-label"><i></i><span id="phaseLabel">Session in progress</span></span>
             <span id="timer" class="session-pill">00:00</span>
           </div>
-          <button id="endEarlyButton" class="end-button" type="button" disabled>Finish interview</button>
+          <div class="session-controls">
+            <button id="captionsButton" class="control-button" type="button">Hide question</button>
+            <label class="volume-control" title="Interviewer volume">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15 9a4 4 0 0 1 0 6"/><path d="M18 6a8 8 0 0 1 0 12"/></svg>
+              <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="1" aria-label="Interviewer volume" />
+            </label>
+            <button id="pauseButton" class="control-button" type="button">Pause</button>
+            <button id="endEarlyButton" class="end-button" type="button" disabled>Finish interview</button>
+          </div>
         </div>
 
         <div class="interviewer-stage">
@@ -86,7 +88,7 @@
           </div>
 
           <p class="interviewer-label">AI powered interviewer</p>
-          <h2 id="questionText">Preparing your interview...</h2>
+          <h2 id="questionText" aria-live="polite">Preparing your interview...</h2>
           <p id="stageStatus" class="stage-status">Please wait.</p>
 
           <div class="interview-actions">
@@ -95,6 +97,15 @@
               Hear again
             </button>
             <button id="doneAnswerButton" class="button answer-done" type="button" disabled>I’m done</button>
+          </div>
+        </div>
+
+        <div id="pauseOverlay" class="pause-overlay hidden">
+          <div class="pause-card">
+            <span class="pause-icon">Ⅱ</span>
+            <h2>Interview paused</h2>
+            <p>Your partial answer was not submitted.</p>
+            <button id="resumeButton" class="button answer-done" type="button">Resume interview</button>
           </div>
         </div>
       </div>
@@ -106,13 +117,15 @@
         <div class="report-heading">
           <div>
             <p class="kicker">Interview complete</p>
-            <h1>Your preparation sheet is ready.</h1>
-            <p>Review the feedback below or save the PDF for your next practice session.</p>
+            <h1>Your preparation pack is ready.</h1>
+            <p>Review the priorities, practise weaker answers and save the PDF before your real interview.</p>
           </div>
           <button id="downloadPdfButton" class="button primary" type="button">Download PDF</button>
         </div>
         <div id="reportContent" class="report-content"></div>
-        <div class="restart-row"><button id="restartButton" class="button secondary" type="button">Start another interview</button></div>
+        <div class="restart-row">
+          <button id="restartButton" class="button secondary" type="button">Start another interview</button>
+        </div>
       </div>
     </section>
   </main>
@@ -126,8 +139,7 @@
 
   <div id="toast" class="toast hidden" role="status"></div>
   <footer>Generated feedback should be reviewed and adapted to your genuine experience.</footer>
-  <script src="config.js?v=3.3"></script>
-  <script src="app.js?v=3.3"></script>
-  <script src="answer-voice-stability.js?v=3.3"></script>
+  <script src="config.js?v=4.0"></script>
+  <script src="app.js?v=4.0"></script>
 </body>
 </html>
