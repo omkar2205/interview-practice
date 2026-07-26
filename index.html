@@ -23,7 +23,7 @@
       <div class="hero">
         <span class="eyebrow">Voice-only mock interview</span>
         <h1>Practise with your CV and the role you want.</h1>
-        <p>Upload your CV, add the job description, complete a realistic mock interview and download a personalised PDF preparation sheet.</p>
+        <p>Upload your CV, add the job description and complete a dynamic interview that responds to what you actually say. At the end, download a personalised PDF preparation sheet.</p>
       </div>
 
       <div class="panel setup-grid">
@@ -56,10 +56,10 @@
     <section id="interviewScreen" class="screen">
       <div class="interview-head">
         <div>
-          <span class="eyebrow" id="questionCounter">Question 1 of 8</span>
+          <span class="eyebrow" id="questionCounter">Dynamic interview</span>
           <h2 id="questionText">Preparing your first question...</h2>
         </div>
-        <button class="text-button" id="endEarlyButton">Finish interview</button>
+        <button class="text-button" id="endEarlyButton" disabled>Finish interview</button>
       </div>
 
       <div class="panel answer-panel">
@@ -72,21 +72,16 @@
         </div>
         <div class="record-actions">
           <button id="recordButton" class="primary">Start answer</button>
-          <button id="stopButton" class="secondary" disabled>Stop and submit</button>
+          <button id="stopButton" class="secondary" disabled>Stop answer</button>
         </div>
         <div class="transcript-card">
           <label>Your transcript</label>
-          <textarea id="transcriptText" rows="8" placeholder="Your answer will appear here after transcription."></textarea>
+          <textarea id="transcriptText" rows="8" placeholder="Your answer will appear here after transcription. You can edit it before continuing."></textarea>
           <div class="transcript-actions">
-            <button id="submitTranscriptButton" class="secondary" disabled>Use edited transcript</button>
+            <button id="submitTranscriptButton" class="secondary" disabled>Use transcript and continue</button>
             <button id="retryButton" class="text-button" disabled>Record again</button>
           </div>
         </div>
-      </div>
-
-      <div id="processingOverlay" class="overlay hidden">
-        <div class="spinner"></div>
-        <strong id="processingText">Processing your answer...</strong>
       </div>
     </section>
 
@@ -103,6 +98,11 @@
       <div class="restart-row"><button id="restartButton" class="secondary">Start another interview</button></div>
     </section>
   </main>
+
+  <div id="processingOverlay" class="overlay hidden">
+    <div class="spinner"></div>
+    <strong id="processingText">Processing your answer...</strong>
+  </div>
 
   <footer>Interview Practice · Responses are generated from the information provided and should be checked for accuracy.</footer>
   <script src="config.js"></script>
