@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Interview Practice</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Aptos:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Interview Practice</div>
+    <div class="status" id="connectionStatus">Backend not connected</div>
+  </header>
+
+  <main class="shell">
+    <section id="setupScreen" class="screen active">
+      <div class="hero">
+        <span class="eyebrow">Voice-only mock interview</span>
+        <h1>Practise with your CV and the role you want.</h1>
+        <p>Upload your CV, add the job description, complete a realistic mock interview and download a personalised PDF preparation sheet.</p>
+      </div>
+
+      <div class="panel setup-grid">
+        <div class="field-block">
+          <label>CV</label>
+          <div class="upload-box" id="cvDrop">
+            <input id="cvFile" type="file" accept=".pdf,.docx,.txt" hidden />
+            <button class="secondary" id="cvButton">Upload CV</button>
+            <span id="cvName">PDF, DOCX or TXT</span>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label>Job description</label>
+          <div class="upload-row">
+            <input id="jdFile" type="file" accept=".pdf,.docx,.txt" hidden />
+            <button class="secondary" id="jdButton">Upload JD</button>
+            <span id="jdName">or paste it below</span>
+          </div>
+          <textarea id="jdText" rows="10" placeholder="Paste or type the job description here..."></textarea>
+        </div>
+
+        <div class="start-row">
+          <div id="setupMessage" class="helper">Both a CV and job description are required.</div>
+          <button id="startButton" class="primary" disabled>Prepare interview</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="interviewScreen" class="screen">
+      <div class="interview-head">
+        <div>
+          <span class="eyebrow" id="questionCounter">Question 1 of 8</span>
+          <h2 id="questionText">Preparing your first question...</h2>
+        </div>
+        <button class="text-button" id="endEarlyButton">Finish interview</button>
+      </div>
+
+      <div class="panel answer-panel">
+        <div class="recorder">
+          <div id="micPulse" class="mic-pulse">🎙</div>
+          <div>
+            <strong id="recordingLabel">Ready to answer</strong>
+            <p id="recordingHelp">Select Start answer and speak naturally.</p>
+          </div>
+        </div>
+        <div class="record-actions">
+          <button id="recordButton" class="primary">Start answer</button>
+          <button id="stopButton" class="secondary" disabled>Stop and submit</button>
+        </div>
+        <div class="transcript-card">
+          <label>Your transcript</label>
+          <textarea id="transcriptText" rows="8" placeholder="Your answer will appear here after transcription."></textarea>
+          <div class="transcript-actions">
+            <button id="submitTranscriptButton" class="secondary" disabled>Use edited transcript</button>
+            <button id="retryButton" class="text-button" disabled>Record again</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="processingOverlay" class="overlay hidden">
+        <div class="spinner"></div>
+        <strong id="processingText">Processing your answer...</strong>
+      </div>
+    </section>
+
+    <section id="reportScreen" class="screen">
+      <div class="report-hero">
+        <div>
+          <span class="eyebrow">Interview complete</span>
+          <h1>Your preparation sheet is ready.</h1>
+          <p>Review the feedback below or download the full PDF for future practice.</p>
+        </div>
+        <button id="downloadPdfButton" class="primary">Download PDF</button>
+      </div>
+      <div id="reportContent" class="report-content"></div>
+      <div class="restart-row"><button id="restartButton" class="secondary">Start another interview</button></div>
+    </section>
+  </main>
+
+  <footer>Interview Practice · Responses are generated from the information provided and should be checked for accuracy.</footer>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
