@@ -3,110 +3,139 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="Personalised AI mock interview practice" />
   <title>Interview Practice</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Aptos:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
+  <link rel="stylesheet" href="styles.css?v=3.0" />
   <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Interview Practice</div>
-    <div class="status" id="connectionStatus">Backend not connected</div>
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M6 9.5a6 6 0 0 1 12 0v5a6 6 0 0 1-12 0z"/><path d="M9 9.5v5a3 3 0 0 0 6 0v-5"/><path d="M4 14.5a8 8 0 0 0 16 0"/><path d="M12 22v-3"/></svg>
+      </span>
+      <span>Interview Practice</span>
+    </div>
+    <div class="connection" id="connectionStatus">Connecting...</div>
   </header>
 
-  <main class="shell">
-    <section id="setupScreen" class="screen active">
-      <div class="hero">
-        <span class="eyebrow">Voice-only mock interview</span>
-        <h1>Practise with your CV and the role you want.</h1>
-        <p>Upload your CV, add the job description and complete a dynamic interview that responds to what you actually say. At the end, download a personalised PDF preparation sheet.</p>
-      </div>
+  <main>
+    <section id="setupScreen" class="screen active setup-screen">
+      <div class="setup-shell">
+        <div class="setup-intro">
+          <p class="kicker">Personalised interview preparation</p>
+          <h1>Practise for the role you want.</h1>
+          <p>Upload your CV and add the job description. Your interview will adapt to your experience and responses.</p>
+        </div>
 
-      <div class="panel setup-grid">
-        <div class="field-block">
-          <label>CV</label>
-          <div class="upload-box" id="cvDrop">
+        <div class="setup-card">
+          <div class="document-field">
+            <div>
+              <span class="step-number">01</span>
+              <h2>CV</h2>
+              <p>PDF, DOCX or TXT</p>
+            </div>
             <input id="cvFile" type="file" accept=".pdf,.docx,.txt" hidden />
-            <button class="secondary" id="cvButton">Upload CV</button>
-            <span id="cvName">PDF, DOCX or TXT</span>
+            <button id="cvButton" class="button secondary" type="button">Choose file</button>
+            <span id="cvName" class="file-name">No file selected</span>
           </div>
-        </div>
 
-        <div class="field-block">
-          <label>Job description</label>
-          <div class="upload-row">
+          <div class="divider"></div>
+
+          <div class="document-field jd-field">
+            <div>
+              <span class="step-number">02</span>
+              <h2>Job description</h2>
+              <p>Upload a file or paste the text</p>
+            </div>
             <input id="jdFile" type="file" accept=".pdf,.docx,.txt" hidden />
-            <button class="secondary" id="jdButton">Upload JD</button>
-            <span id="jdName">or paste it below</span>
+            <button id="jdButton" class="button secondary" type="button">Choose file</button>
+            <span id="jdName" class="file-name">No file selected</span>
+            <textarea id="jdText" rows="8" placeholder="Paste the job description here..."></textarea>
           </div>
-          <textarea id="jdText" rows="10" placeholder="Paste or type the job description here..."></textarea>
-        </div>
 
-        <div class="start-row">
-          <div id="setupMessage" class="helper">Both a CV and job description are required.</div>
-          <button id="startButton" class="primary" disabled>Prepare interview</button>
+          <div class="setup-footer">
+            <span id="setupMessage">Add both documents to continue.</span>
+            <button id="startButton" class="button primary" type="button" disabled>
+              Begin interview
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="interviewScreen" class="screen">
-      <div class="interview-head">
-        <div>
-          <span class="eyebrow" id="questionCounter">Dynamic interview</span>
-          <h2 id="questionText">Preparing your first question...</h2>
+    <section id="interviewScreen" class="screen interview-screen">
+      <div class="interview-room">
+        <div class="session-topbar">
+          <div class="session-meta">
+            <span id="questionCounter" class="session-pill">Question 1</span>
+            <span class="live-label"><i></i>Session in progress</span>
+            <span id="timer" class="session-pill">00:00</span>
+          </div>
+          <button id="endEarlyButton" class="end-button" type="button" disabled>Finish interview</button>
         </div>
-        <button class="text-button" id="endEarlyButton" disabled>Finish interview</button>
-      </div>
 
-      <div class="panel answer-panel">
-        <div class="recorder">
-          <div id="micPulse" class="mic-pulse">🎙</div>
+        <div class="interviewer-stage">
+          <div id="voiceOrb" class="voice-orb preparing" aria-hidden="true">
+            <svg class="progress-ring" viewBox="0 0 220 220">
+              <circle class="ring-track" cx="110" cy="110" r="101"></circle>
+              <circle id="progressArc" class="ring-progress" cx="110" cy="110" r="101"></circle>
+            </svg>
+            <div id="voiceWave" class="voice-wave">
+              <span></span><span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+
+          <p class="interviewer-label">AI powered interviewer</p>
+          <h2 id="questionText">Preparing your interview...</h2>
+          <p id="stageStatus" class="stage-status">Please wait.</p>
+
+          <div class="interview-actions">
+            <button id="repeatQuestionButton" class="button ghost" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+              Hear again
+            </button>
+            <button id="doneAnswerButton" class="button answer-done" type="button" disabled>
+              I’m done
+            </button>
+          </div>
+        </div>
+      </div>
+      <audio id="questionAudio" preload="auto"></audio>
+    </section>
+
+    <section id="reportScreen" class="screen report-screen">
+      <div class="report-shell">
+        <div class="report-heading">
           <div>
-            <strong id="recordingLabel">Ready to answer</strong>
-            <p id="recordingHelp">Select Start answer and speak naturally.</p>
+            <p class="kicker">Interview complete</p>
+            <h1>Your preparation sheet is ready.</h1>
+            <p>Review the feedback below or save the PDF for your next practice session.</p>
           </div>
+          <button id="downloadPdfButton" class="button primary" type="button">Download PDF</button>
         </div>
-        <div class="record-actions">
-          <button id="recordButton" class="primary">Start answer</button>
-          <button id="stopButton" class="secondary" disabled>Stop answer</button>
-        </div>
-        <div class="transcript-card">
-          <label>Your transcript</label>
-          <textarea id="transcriptText" rows="8" placeholder="Your answer will appear here after transcription. You can edit it before continuing."></textarea>
-          <div class="transcript-actions">
-            <button id="submitTranscriptButton" class="secondary" disabled>Use transcript and continue</button>
-            <button id="retryButton" class="text-button" disabled>Record again</button>
-          </div>
+        <div id="reportContent" class="report-content"></div>
+        <div class="restart-row">
+          <button id="restartButton" class="button secondary" type="button">Start another interview</button>
         </div>
       </div>
-    </section>
-
-    <section id="reportScreen" class="screen">
-      <div class="report-hero">
-        <div>
-          <span class="eyebrow">Interview complete</span>
-          <h1>Your preparation sheet is ready.</h1>
-          <p>Review the feedback below or download the full PDF for future practice.</p>
-        </div>
-        <button id="downloadPdfButton" class="primary">Download PDF</button>
-      </div>
-      <div id="reportContent" class="report-content"></div>
-      <div class="restart-row"><button id="restartButton" class="secondary">Start another interview</button></div>
     </section>
   </main>
 
-  <div id="processingOverlay" class="overlay hidden">
-    <div class="spinner"></div>
-    <strong id="processingText">Processing your answer...</strong>
+  <div id="processingOverlay" class="processing-overlay hidden" aria-live="polite">
+    <div class="processing-card">
+      <div class="processing-wave"><span></span><span></span><span></span><span></span><span></span></div>
+      <strong id="processingText">Preparing...</strong>
+    </div>
   </div>
 
-  <footer>Interview Practice · Responses are generated from the information provided and should be checked for accuracy.</footer>
-  <script src="config.js"></script>
-  <script src="app.js"></script>
-  <script src="api-fix.js"></script>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <footer>Generated feedback should be reviewed and adapted to your genuine experience.</footer>
+  <script src="config.js?v=3.0"></script>
+  <script src="app.js?v=3.0"></script>
 </body>
 </html>
