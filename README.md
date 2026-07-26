@@ -1,37 +1,47 @@
 # Interview Practice
 
-A simple voice-only mock interview tool based on the candidate's CV and a target job description.
+A personalised spoken mock interview tool based on the candidate's CV and a target job description.
 
 ## Candidate journey
 
 1. Upload a CV in PDF, DOCX or TXT format.
 2. Upload or paste the job description.
-3. Complete a dynamic microphone-based interview.
+3. Complete an automatic spoken interview.
 4. Review detailed feedback.
 5. Download a personalised PDF preparation sheet.
 
-No camera, account creation or survey is required.
+No camera, account creation, survey or typed interview response is required.
+
+## Interview flow
+
+- Gemini TTS reads each question using a natural interviewer voice.
+- The speaking waveform animates while the question is being read.
+- Microphone listening starts automatically when the question ends.
+- The response stops automatically after a natural pause, with an **I'm done** button as a fallback.
+- Groq transcribes and privately evaluates the answer.
+- The next short question is selected using the CV, job description and latest response.
+- **Hear again** repeats the current question without submitting the partial answer.
 
 ## Dynamic interview policy
 
 - Minimum: 8 completed questions.
 - Normal target: around 12 questions.
 - Maximum: 16 questions by default, with backend support for up to 20.
-- Each next question is selected after reviewing the candidate's latest response.
-- The interviewer may ask one targeted follow-up when an answer is vague, introduces an important claim or needs clearer evidence.
-- The flow moves to another priority competency after a follow-up and avoids repeating earlier questions.
+- Each question must contain one idea, use direct spoken English and remain under 20 words.
+- The interviewer may ask one targeted follow-up when a response needs clearer evidence.
+- Consecutive follow-ups on the same answer are prevented.
 
-The values can be changed in `config.js` using `MIN_QUESTIONS`, `TARGET_QUESTIONS` and `MAX_QUESTIONS`.
+The limits can be changed in `config.js` using `MIN_QUESTIONS`, `TARGET_QUESTIONS` and `MAX_QUESTIONS`.
 
 ## AI task split
 
-- **Gemini**: CV/JD understanding, candidate profile, competency blueprint, first question and final report synthesis.
+- **Gemini**: CV/JD understanding, competency blueprint, first question, natural TTS voice and final report synthesis.
 - **Groq**: microphone transcription, answer-level coaching, competency coverage and selection of the next response-specific question.
 
 ## Repository structure
 
 - `index.html`, `styles.css`, `app.js`: GitHub Pages frontend.
-- `config.js`: deployed Apps Script Web App URL and interview-length policy.
+- `config.js`: Apps Script Web App URL and interview-length policy.
 - `backend/Code.gs`: Google Apps Script backend.
 
 ## Required Apps Script properties
@@ -42,7 +52,7 @@ The values can be changed in `config.js` using `MIN_QUESTIONS`, `TARGET_QUESTION
 
 ## Deploying backend changes
 
-Changes made to `backend/Code.gs` in GitHub do not automatically update the deployed Apps Script Web App.
+GitHub changes to `backend/Code.gs` do not automatically update the deployed Apps Script Web App.
 
 1. Copy the complete current `backend/Code.gs` into the Apps Script project's `Code.gs`.
 2. Save the Apps Script project.
@@ -51,8 +61,8 @@ Changes made to `backend/Code.gs` in GitHub do not automatically update the depl
 5. Select **New version**, then deploy.
 6. Keep the existing `/exec` URL in `config.js`.
 
-Opening the `/exec` URL directly should return a JSON response with `version: "2.0-dynamic"` after the new backend is deployed.
+Opening the `/exec` URL directly should return a JSON response containing `version: "3.0-voice-flow"` after deployment.
 
 ## Privacy
 
-The frontend extracts CV and JD text in the browser and sends it to the configured Apps Script backend. Microphone audio is sent to Groq for transcription. Candidates should only process documents they are authorised to use and should review generated feedback for accuracy.
+CV/JD text is extracted in the browser and sent to the configured Apps Script backend. Microphone audio is sent to Groq for transcription. Candidates should only process documents they are authorised to use and should review generated feedback for accuracy.
