@@ -13,19 +13,20 @@ const state = {
   report: null,
   micStream: null,
   mediaRecorder: null,
-  chunks: [],
   audioContext: null,
   analyser: null,
   analyserData: null,
   silenceTimer: null,
-  answerStartedAt: 0,
-  lastSpeechAt: 0,
-  hasSpeech: false,
-  discardRecording: false,
-  questionAudioUrl: null,
   timerStartedAt: 0,
   timerHandle: null,
-  toastHandle: null
+  toastHandle: null,
+  questionAudioUrl: null,
+  audioResolve: null,
+  speechResolve: null,
+  sessionStopped: false,
+  finishStarted: false,
+  flowVersion: 0,
+  pendingControllers: new Set()
 };
 
 const screens = ['setupScreen', 'interviewScreen', 'reportScreen'];
@@ -59,32 +60,48 @@ function configuredPolicy() {
   };
 }
 
-async function callApi(action, payload = {}) {
+function isFlowActive(flow) {
+  return !state.sessionStopped && flow === state.flowVersion;
+}
+
+function isCancellation(error) {
+  return state.sessionStopped || error?.name === 'AbortError' || error?.message === 'Interview ended.';
+}
+
+async function callApi(action, payload = {}, allowStopped = false) {
   const url = window.APP_CONFIG?.API_URL;
   if (!url) throw new Error('Backend URL has not been added to config.js.');
+  if (state.sessionStopped && !allowStopped) throw new Error('Interview ended.');
 
-  let response;
+  const controller = new AbortController();
+  state.pendingControllers.add(controller);
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       redirect: 'follow',
       cache: 'no-store',
       credentials: 'omit',
+      signal: controller.signal,
       body: JSON.stringify({ action, ...payload })
     });
-  } catch (_) {
-    throw new Error('Could not reach the interview backend. Confirm the Apps Script deployment is available to anyone.');
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      throw new Error('The backend returned an invalid response. Deploy the latest backend/Code.gs as a new Apps Script version.');
+    }
+    if (!data.ok) throw new Error(data.error || 'Backend request failed.');
+    return data.data;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    if (/Failed to fetch|NetworkError|Load failed/i.test(error?.message || '')) {
+      throw new Error('Could not reach the interview backend. Confirm the Apps Script deployment is available to anyone.');
+    }
+    throw error;
+  } finally {
+    state.pendingControllers.delete(controller);
   }
-
-  const text = await response.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (_) {
-    throw new Error('The backend returned an invalid response. Deploy the latest backend/Code.gs as a new Apps Script version.');
-  }
-  if (!data.ok) throw new Error(data.error || 'Backend request failed.');
-  return data.data;
 }
 
 async function extractFile(file) {
@@ -138,10 +155,8 @@ $('jdText').oninput = validateSetup;
 
 async function initialise() {
   try {
-    const result = await callApi('health');
-    $('connectionStatus').textContent = `Connected · ${result.version || 'ready'}`;
+    await callApi('health');
   } catch (error) {
-    $('connectionStatus').textContent = 'Backend unavailable';
     console.error(error);
   }
 }
@@ -170,6 +185,9 @@ async function ensureMicrophone() {
 
 $('startButton').onclick = async () => {
   try {
+    state.sessionStopped = false;
+    state.finishStarted = false;
+    state.flowVersion += 1;
     state.jdText = $('jdText').value.trim();
     state.policy = configuredPolicy();
     await ensureMicrophone();
@@ -194,7 +212,7 @@ $('startButton').onclick = async () => {
     await presentQuestion();
   } catch (error) {
     setBusy(false);
-    alert(error.message);
+    if (!isCancellation(error)) alert(error.message);
   }
 };
 
@@ -218,10 +236,16 @@ function setStage(mode, status) {
   $('stageStatus').textContent = status;
 }
 
+function stageLabel(question) {
+  return question?.stageLabel || String(question?.stage || '').replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+}
+
 async function presentQuestion() {
+  if (state.sessionStopped) return;
   if (!state.currentQuestion) return finishInterview();
   updateProgress();
-  $('questionCounter').textContent = `Question ${state.questionNumber}`;
+  const label = stageLabel(state.currentQuestion);
+  $('questionCounter').textContent = label ? `Question ${state.questionNumber} · ${label}` : `Question ${state.questionNumber}`;
   $('questionText').textContent = state.currentQuestion.question;
   $('repeatQuestionButton').disabled = true;
   $('doneAnswerButton').disabled = true;
@@ -229,36 +253,114 @@ async function presentQuestion() {
   await speakQuestion(state.currentQuestion.question);
 }
 
-async function speakQuestion(text) {
-  cancelListening(true);
-  setStage('speaking', 'Listen to the question.');
+function stopQuestionAudio() {
+  const audio = $('questionAudio');
+  if (audio) {
+    audio.onended = null;
+    audio.onerror = null;
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.removeAttribute('src');
+      audio.load();
+    } catch (_) {}
+  }
+  if (state.audioResolve) {
+    const resolve = state.audioResolve;
+    state.audioResolve = null;
+    resolve();
+  }
+  if ('speechSynthesis' in window) {
+    try { speechSynthesis.cancel(); } catch (_) {}
+  }
+  if (state.speechResolve) {
+    const resolve = state.speechResolve;
+    state.speechResolve = null;
+    resolve();
+  }
+  if (state.questionAudioUrl) {
+    try { URL.revokeObjectURL(state.questionAudioUrl); } catch (_) {}
+    state.questionAudioUrl = null;
+  }
+}
+
+function cancelCurrentTurn(discard = true) {
+  clearInterval(state.silenceTimer);
+  stopQuestionAudio();
+  if (state.mediaRecorder?.state === 'recording') {
+    state.mediaRecorder._discard = discard;
+    try { state.mediaRecorder.stop(); } catch (_) {}
+  }
   $('repeatQuestionButton').disabled = true;
   $('doneAnswerButton').disabled = true;
+}
+
+function stopAllInterviewActivity() {
+  state.sessionStopped = true;
+  state.flowVersion += 1;
+  clearInterval(state.timerHandle);
+  clearInterval(state.silenceTimer);
+  clearTimeout(state.toastHandle);
+  stopQuestionAudio();
+  cancelCurrentTurn(true);
+  state.pendingControllers.forEach(controller => {
+    try { controller.abort(); } catch (_) {}
+  });
+  state.pendingControllers.clear();
+  if (state.micStream) {
+    state.micStream.getTracks().forEach(track => {
+      try { track.stop(); } catch (_) {}
+    });
+    state.micStream = null;
+  }
+  resetWaveBars();
+  $('endEarlyButton').disabled = true;
+}
+
+async function speakQuestion(text) {
+  if (state.sessionStopped) return;
+  const flow = ++state.flowVersion;
+  cancelCurrentTurn(true);
+  setStage('speaking', 'Listen to the question.');
 
   try {
     const result = await callApi('synthesiseSpeech', { text });
-    await playPcmAudio(result.audioBase64, Number(result.sampleRate || 24000));
+    if (!isFlowActive(flow)) return;
+    await playPcmAudio(result.audioBase64, Number(result.sampleRate || 24000), flow);
   } catch (error) {
+    if (!isFlowActive(flow) || isCancellation(error)) return;
     console.warn('Gemini TTS unavailable, using browser voice.', error);
-    await speakWithBrowserVoice(text);
+    await speakWithBrowserVoice(text, flow);
   }
 
+  if (!isFlowActive(flow)) return;
   await wait(320);
-  await startListening();
+  if (!isFlowActive(flow)) return;
+  await startListening(flow);
 }
 
-function playPcmAudio(base64, sampleRate) {
+function playPcmAudio(base64, sampleRate, flow) {
   return new Promise((resolve, reject) => {
+    if (!isFlowActive(flow)) return resolve();
     if (!base64) return reject(new Error('No TTS audio returned.'));
-    if (state.questionAudioUrl) URL.revokeObjectURL(state.questionAudioUrl);
     const bytes = base64ToBytes(base64);
     const wav = pcmToWavBlob(bytes, sampleRate, 1, 16);
     state.questionAudioUrl = URL.createObjectURL(wav);
     const audio = $('questionAudio');
+    state.audioResolve = resolve;
     audio.src = state.questionAudioUrl;
-    audio.onended = resolve;
-    audio.onerror = () => reject(new Error('Generated voice could not be played.'));
-    audio.play().catch(reject);
+    audio.onended = () => {
+      state.audioResolve = null;
+      resolve();
+    };
+    audio.onerror = () => {
+      state.audioResolve = null;
+      reject(new Error('Generated voice could not be played.'));
+    };
+    audio.play().catch(error => {
+      state.audioResolve = null;
+      reject(error);
+    });
   });
 }
 
@@ -289,9 +391,9 @@ function pcmToWavBlob(pcmBytes, sampleRate, channels, bitsPerSample) {
   return new Blob([header, pcmBytes], { type: 'audio/wav' });
 }
 
-function speakWithBrowserVoice(text) {
+function speakWithBrowserVoice(text, flow) {
   return new Promise(resolve => {
-    if (!('speechSynthesis' in window)) return resolve();
+    if (!isFlowActive(flow) || !('speechSynthesis' in window)) return resolve();
     speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = speechSynthesis.getVoices();
@@ -306,38 +408,42 @@ function speakWithBrowserVoice(text) {
     utterance.lang = 'en-GB';
     utterance.rate = .94;
     utterance.pitch = 1;
-    utterance.onend = resolve;
-    utterance.onerror = resolve;
+    state.speechResolve = resolve;
+    utterance.onend = () => { state.speechResolve = null; resolve(); };
+    utterance.onerror = () => { state.speechResolve = null; resolve(); };
     speechSynthesis.speak(utterance);
   });
 }
 
-async function startListening() {
+async function startListening(flow) {
+  if (!isFlowActive(flow)) return;
   await ensureMicrophone();
-  state.chunks = [];
-  state.discardRecording = false;
-  state.hasSpeech = false;
-  state.answerStartedAt = Date.now();
-  state.lastSpeechAt = Date.now();
+  if (!isFlowActive(flow)) return;
 
+  const chunks = [];
   const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? { mimeType: 'audio/webm;codecs=opus' }
     : {};
-  state.mediaRecorder = new MediaRecorder(state.micStream, options);
-  state.mediaRecorder.ondataavailable = event => { if (event.data.size) state.chunks.push(event.data); };
-  state.mediaRecorder.onstop = processRecordedAnswer;
-  state.mediaRecorder.start(250);
+  const recorder = new MediaRecorder(state.micStream, options);
+  recorder._discard = false;
+  recorder._hasSpeech = false;
+  recorder._answerStartedAt = Date.now();
+  recorder._lastSpeechAt = Date.now();
+  recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+  recorder.onstop = () => processRecordedAnswer(flow, recorder, chunks);
+  state.mediaRecorder = recorder;
+  recorder.start(250);
 
   setStage('listening', 'Your answer.');
   $('repeatQuestionButton').disabled = false;
   $('doneAnswerButton').disabled = false;
-  monitorSilence();
+  monitorSilence(flow, recorder);
 }
 
-function monitorSilence() {
+function monitorSilence(flow, recorder) {
   clearInterval(state.silenceTimer);
   state.silenceTimer = setInterval(() => {
-    if (!state.analyser || state.mediaRecorder?.state !== 'recording') return;
+    if (!isFlowActive(flow) || !state.analyser || recorder.state !== 'recording') return;
     state.analyser.getFloatTimeDomainData(state.analyserData);
     let sum = 0;
     for (const sample of state.analyserData) sum += sample * sample;
@@ -345,67 +451,62 @@ function monitorSilence() {
     updateListeningWave(rms);
 
     const now = Date.now();
-    const elapsed = now - state.answerStartedAt;
+    const elapsed = now - recorder._answerStartedAt;
     if (rms > SPEECH_THRESHOLD) {
-      state.hasSpeech = true;
-      state.lastSpeechAt = now;
+      recorder._hasSpeech = true;
+      recorder._lastSpeechAt = now;
     }
 
-    if (state.hasSpeech && now - state.lastSpeechAt >= SILENCE_MS && elapsed > 2500) {
-      stopListening();
-    } else if (!state.hasSpeech && elapsed >= NO_SPEECH_TIMEOUT_MS) {
-      cancelListening(true);
+    if (recorder._hasSpeech && now - recorder._lastSpeechAt >= SILENCE_MS && elapsed > 2500) {
+      stopListening(recorder);
+    } else if (!recorder._hasSpeech && elapsed >= NO_SPEECH_TIMEOUT_MS) {
+      recorder._discard = true;
+      stopListening(recorder, true);
       showToast('No answer was detected. The question will play again.');
-      setTimeout(() => speakQuestion(state.currentQuestion.question), 700);
+      setTimeout(() => {
+        if (isFlowActive(flow)) speakQuestion(state.currentQuestion.question);
+      }, 700);
     } else if (elapsed >= MAX_ANSWER_MS) {
-      stopListening();
+      stopListening(recorder);
     }
   }, 120);
 }
 
 function updateListeningWave(rms) {
   const strength = Math.min(1, rms * 18);
-  const bars = [...$('voiceWave').children];
-  bars.forEach((bar, index) => {
+  [...$('voiceWave').children].forEach((bar, index) => {
     const centre = 1 - Math.abs(index - 4) / 5;
     bar.style.height = `${12 + strength * (28 + centre * 36)}px`;
   });
 }
 
-function stopListening() {
+function stopListening(recorder = state.mediaRecorder, discard = false) {
   clearInterval(state.silenceTimer);
-  if (state.mediaRecorder?.state === 'recording') state.mediaRecorder.stop();
+  if (!recorder || recorder.state !== 'recording') return;
+  if (discard) recorder._discard = true;
+  recorder.stop();
   $('doneAnswerButton').disabled = true;
   $('repeatQuestionButton').disabled = true;
-  setStage('processing', 'Reviewing your answer...');
+  if (!discard) setStage('processing', 'Reviewing your answer...');
 }
 
-function cancelListening(discard) {
-  clearInterval(state.silenceTimer);
-  if (discard) state.discardRecording = true;
-  if (state.mediaRecorder?.state === 'recording') state.mediaRecorder.stop();
-}
-
-async function processRecordedAnswer() {
+async function processRecordedAnswer(flow, recorder, chunks) {
   resetWaveBars();
-  if (state.discardRecording) {
-    state.chunks = [];
-    return;
-  }
+  if (recorder._discard || !isFlowActive(flow)) return;
+  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
 
-  const blob = new Blob(state.chunks, { type: state.mediaRecorder.mimeType || 'audio/webm' });
   try {
     const audioBase64 = await blobToBase64(blob);
-    const transcriptResult = await callApi('transcribe', {
-      audioBase64,
-      mimeType: blob.type
-    });
+    if (!isFlowActive(flow)) return;
+    const transcriptResult = await callApi('transcribe', { audioBase64, mimeType: blob.type });
+    if (!isFlowActive(flow)) return;
     const transcript = String(transcriptResult.transcript || '').trim();
 
     if (transcript.split(/\s+/).filter(Boolean).length < 3) {
       showToast('We could not hear enough of your answer. Please try again.');
       await wait(650);
-      return speakQuestion(state.currentQuestion.question);
+      if (isFlowActive(flow)) await speakQuestion(state.currentQuestion.question);
+      return;
     }
 
     const question = state.currentQuestion;
@@ -419,27 +520,35 @@ async function processRecordedAnswer() {
       questionNumber: state.questionNumber,
       policy: state.policy
     });
+    if (!isFlowActive(flow)) return;
 
     state.answers.push({
       question: question.question,
       category: question.category,
       competency: question.competency,
       purpose: question.purpose,
+      stage: question.stage,
+      stageLabel: question.stageLabel,
+      focusKey: question.focusKey,
       isFollowUp: Boolean(question.isFollowUp),
       transcript,
       evaluation: result.evaluation
     });
     state.coverage = result.coverage || state.coverage;
 
-    if (result.shouldFinish || !result.nextQuestion) return finishInterview();
+    if (result.shouldFinish || !result.nextQuestion) {
+      await finishInterview();
+      return;
+    }
     state.currentQuestion = result.nextQuestion;
     state.questionNumber += 1;
     await presentQuestion();
   } catch (error) {
+    if (isCancellation(error) || !isFlowActive(flow)) return;
     console.error(error);
     showToast(error.message, 5000);
     await wait(900);
-    await speakQuestion(state.currentQuestion.question);
+    if (isFlowActive(flow)) await speakQuestion(state.currentQuestion.question);
   }
 }
 
@@ -457,23 +566,21 @@ function blobToBase64(blob) {
 }
 
 $('repeatQuestionButton').onclick = async () => {
-  cancelListening(true);
-  await wait(200);
+  if (state.sessionStopped) return;
   await speakQuestion(state.currentQuestion.question);
 };
-$('doneAnswerButton').onclick = stopListening;
+$('doneAnswerButton').onclick = () => stopListening();
 
 $('endEarlyButton').onclick = () => {
-  if (state.answers.length < 5) return;
+  if (state.answers.length < 5 || state.finishStarted) return;
   if (!window.confirm('Finish now and create your preparation report?')) return;
-  cancelListening(true);
   finishInterview();
 };
 
 async function finishInterview() {
-  if (!state.answers.length) return;
-  clearInterval(state.timerHandle);
-  cancelListening(true);
+  if (!state.answers.length || state.finishStarted) return;
+  state.finishStarted = true;
+  stopAllInterviewActivity();
   setBusy(true, 'Creating your preparation sheet...');
   try {
     state.report = await callApi('finaliseReport', {
@@ -482,11 +589,12 @@ async function finishInterview() {
       jdText: state.jdText,
       answers: state.answers,
       coverage: state.coverage
-    });
+    }, true);
     renderReport();
     showScreen('reportScreen');
   } catch (error) {
-    alert(error.message);
+    state.finishStarted = false;
+    if (!isCancellation(error)) alert(error.message);
   } finally {
     setBusy(false);
   }
@@ -527,6 +635,7 @@ function renderReport() {
       ${state.answers.map((answer, index) => `
         <div class="answer-review">
           <strong>${index + 1}. ${escapeHtml(answer.question)}</strong>
+          <p><b>Section:</b> ${escapeHtml(answer.stageLabel || stageLabel(answer))}</p>
           <p><b>Area assessed:</b> ${escapeHtml(answer.competency || answer.category || '')}</p>
           <p><b>Your response:</b> ${escapeHtml(answer.transcript)}</p>
           <p><b>What worked:</b> ${escapeHtml((answer.evaluation.strengths || []).join(' · '))}</p>
@@ -566,6 +675,7 @@ $('downloadPdfButton').onclick = () => {
   (state.report.roleResearchTopics || []).forEach(item => line('• ' + item));
   state.answers.forEach((answer, index) => {
     line(`${index + 1}. ${answer.question}`, 13, true);
+    line(`Section: ${answer.stageLabel || stageLabel(answer)}`);
     line(`Area assessed: ${answer.competency || answer.category || ''}`);
     line('Your response: ' + answer.transcript);
     line('What worked: ' + (answer.evaluation.strengths || []).join('; '));
@@ -577,14 +687,6 @@ $('downloadPdfButton').onclick = () => {
 };
 
 $('restartButton').onclick = () => location.reload();
-
 function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
-window.addEventListener('beforeunload', () => {
-  clearInterval(state.timerHandle);
-  clearInterval(state.silenceTimer);
-  state.micStream?.getTracks().forEach(track => track.stop());
-  if (state.questionAudioUrl) URL.revokeObjectURL(state.questionAudioUrl);
-});
-
+window.addEventListener('beforeunload', stopAllInterviewActivity);
 initialise();
