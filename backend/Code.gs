@@ -8,22 +8,33 @@ const CONFIG = {
   DEFAULT_TARGET_QUESTIONS: 12,
   DEFAULT_MAX_QUESTIONS: 16,
   ABSOLUTE_MAX_QUESTIONS: 20,
-  MAX_QUESTION_WORDS: 20
+  MAX_QUESTION_WORDS: 20,
+  MAX_FOLLOWUPS: 3,
+  MAX_FOLLOWUPS_PER_STAGE: 1
 };
 
+const STAGE_SEQUENCE = [
+  { id: 'introduction', label: 'Introduction', quota: 1 },
+  { id: 'background', label: 'Background', quota: 2 },
+  { id: 'behavioural', label: 'Behavioural', quota: 3 },
+  { id: 'resume', label: 'CV discussion', quota: 2 },
+  { id: 'job_fit', label: 'Role fit', quota: 2 },
+  { id: 'contribution', label: 'Contribution', quota: 1 },
+  { id: 'career_clarification', label: 'Career history', quota: 1, conditional: true },
+  { id: 'closing', label: 'Closing', quota: 1 }
+];
+
 const QUESTION_RULES = `
-INTERVIEW QUESTION STYLE:
+QUESTION STYLE:
 - Ask exactly one question at a time.
 - Use simple, natural spoken English.
 - Keep the question under 20 words.
 - Ask about one idea only.
 - Be direct. Do not add an introduction, explanation or coaching.
 - Do not combine several tasks with "and".
-- Do not ask the candidate to cover situation, action and result in one question.
 - Use one question mark only.
-- Make the question specific to the CV, job description or the candidate's previous answer.
-- Good examples: "What interested you in this role?"; "How did you improve the admissions process?"; "What changed after you introduced that tracker?"
-- Bad example: "Can you explain the situation, what your role was, what actions you took, and what the final outcome was?"
+- Make the question specific to the supplied focus.
+- Never ask for situation, action and result in the same question.
 `;
 
 function doGet() {
@@ -32,7 +43,7 @@ function doGet() {
     data: {
       service: 'Interview Practice API',
       status: 'ready',
-      version: '3.0-voice-flow',
+      version: '3.2-structured-interview',
       geminiModel: CONFIG.GEMINI_MODEL,
       ttsModel: CONFIG.GEMINI_TTS_MODEL,
       groqModel: CONFIG.GROQ_TEXT_MODEL
@@ -48,7 +59,7 @@ function doPost(e) {
       case 'health':
         data = {
           status: 'ready',
-          version: '3.0-voice-flow',
+          version: '3.2-structured-interview',
           geminiModel: CONFIG.GEMINI_MODEL,
           ttsModel: CONFIG.GEMINI_TTS_MODEL,
           groqModel: CONFIG.GROQ_TEXT_MODEL
@@ -89,8 +100,7 @@ function prepareInterview_(body) {
     throw new Error('CV and job description text are required.');
   }
 
-  const policy = normalisePolicy_(body);
-  const prompt = `You are designing a realistic spoken mock job interview. Analyse the candidate CV and exact job description.
+  const prompt = `Analyse this CV and job description to prepare a balanced, structured mock interview.
 
 CV:
 ${cvText}
@@ -104,49 +114,76 @@ Return strict JSON only:
     "candidateName": "",
     "targetRole": "",
     "organisation": "",
+    "currentRole": "",
     "experienceSummary": "",
     "skills": [""],
     "evidence": ["specific evidence taken from the CV"]
   },
   "blueprint": {
     "roleRequirements": ["specific requirement from the JD"],
-    "competencies": [{
-      "name": "",
-      "priority": "critical|high|standard",
-      "whyItMatters": "",
-      "cvEvidence": "",
-      "jdEvidence": ""
-    }]
-  },
-  "firstQuestion": {
-    "question": "",
-    "category": "introduction|motivation|behavioural|technical|role-fit|closing",
-    "competency": "",
-    "purpose": "",
-    "isFollowUp": false
+    "behaviouralCompetencies": [
+      {"key":"","name":"","whyRelevant":""}
+    ],
+    "resumeAreas": [
+      {"key":"","name":"","employerOrContext":"","evidence":"","priority":"high|standard"}
+    ],
+    "jdRequirements": [
+      {"key":"","name":"","evidence":"","priority":"critical|high|standard"}
+    ],
+    "careerSignals": {
+      "clarificationNeeded": false,
+      "type": "none|employment_gap|frequent_moves|career_change",
+      "evidence": "",
+      "neutralFocus": ""
+    }
   }
 }
 
-Interview policy: minimum ${policy.minQuestions}, normal target ${policy.targetQuestions}, maximum ${policy.maxQuestions}.
-Later questions will be generated from the candidate's actual answers.
-
 Rules:
 - Extract the real target role and organisation where available.
-- Build 6 to 10 specific competencies from the CV and JD, ranked by importance.
-- Use actual projects, tools, responsibilities, sectors, achievements and role requirements.
-- Never invent experience, employers, qualifications, tools or results.
-- Generate only the first question, not a fixed list.
-- The opening question must reference either the target role, organisation, or a clear CV strength.
-${QUESTION_RULES}`;
+- Provide at least five distinct behavioural competencies relevant to the role.
+- Provide four to six different CV areas across roles, projects, achievements or responsibilities.
+- Do not list the same project or achievement under different names.
+- Provide four to six different high-value JD requirements.
+- Never invent experience, dates, employers, tools, qualifications or results.
+- Career clarification must be false unless the CV clearly supports it.
+- Flag an employment gap only when reliable month-level dates show an unexplained gap of at least six months.
+- Do not infer a gap from year-only dates or missing dates.
+- Flag frequent moves only when several clearly short tenures form a meaningful pattern.
+- Keep career clarification neutral and never infer health, family, pregnancy, disability, age, religion or other personal matters.`;
 
   const result = callGeminiJson_(prompt);
-  if (!result.profile || !result.blueprint || !isQuestion_(result.firstQuestion)) {
-    throw new Error('Gemini returned an invalid interview setup.');
-  }
-  result.firstQuestion = normaliseQuestion_(result.firstQuestion);
+  result.profile = normaliseProfile_(result.profile);
+  result.blueprint = normaliseBlueprint_(result.blueprint);
+
+  const policy = normalisePolicy_(body);
+  const requiredCore = requiredCoreCount_(result.blueprint);
+  policy.targetQuestions = requiredCore;
+  policy.maxQuestions = Math.min(
+    CONFIG.ABSOLUTE_MAX_QUESTIONS,
+    Math.max(policy.maxQuestions, requiredCore + 2)
+  );
+
+  result.firstQuestion = makeFirstQuestion_(result.profile);
   result.policy = policy;
-  logSession_('PREPARED', result.profile.targetRole || '', policy.targetQuestions, '');
+  logSession_('PREPARED', result.profile.targetRole || '', requiredCore, '');
   return result;
+}
+
+function makeFirstQuestion_(profile) {
+  const role = cleanText_(profile.targetRole, 120);
+  return normaliseQuestion_({
+    question: role
+      ? 'Please introduce yourself in relation to the ' + role + ' role.'
+      : 'Please introduce yourself in relation to your target role.',
+    category: 'introduction',
+    competency: 'professional introduction',
+    purpose: 'Assess how clearly the candidate presents their relevant professional profile.',
+    stage: 'introduction',
+    stageLabel: 'Introduction',
+    focusKey: 'introduction',
+    isFollowUp: false
+  });
 }
 
 function synthesiseSpeechWithGemini_(text) {
@@ -156,8 +193,8 @@ function synthesiseSpeechWithGemini_(text) {
   const key = requiredProperty_('GEMINI_API_KEY');
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
     encodeURIComponent(CONFIG.GEMINI_TTS_MODEL) + ':generateContent?key=' + encodeURIComponent(key);
-
   const voicePrompt = `Read the interview question exactly as written. Use a warm, calm, professional British English voice. Speak naturally at a moderate pace. Do not add or remove words.\n\n${text}`;
+
   const response = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
@@ -222,33 +259,41 @@ function reviewAndContinueWithGroq_(body) {
   if (!transcript) throw new Error('The answer transcript is empty.');
 
   const previousAnswers = Array.isArray(body.previousAnswers) ? body.previousAnswers : [];
-  const questionNumber = Math.max(1, Number(body.questionNumber || previousAnswers.length + 1));
   const policy = normalisePolicy_(body.policy || body);
-  const blueprint = body.blueprint || {};
-  const history = compactHistory_(previousAnswers, 10);
+  const profile = normaliseProfile_(body.profile);
+  const blueprint = normaliseBlueprint_(body.blueprint);
+  const completedAnswers = previousAnswers.concat([{
+    question: currentQuestion.question,
+    stage: currentQuestion.stage,
+    stageLabel: currentQuestion.stageLabel,
+    focusKey: currentQuestion.focusKey,
+    isFollowUp: currentQuestion.isFollowUp,
+    transcript: transcript
+  }]);
 
-  const prompt = `You are running a realistic adaptive mock interview. Privately evaluate the current answer, update competency coverage, and choose the next question.
+  const nextStage = getNextStage_(blueprint, completedAnswers);
+  const nextFocus = nextStage ? selectStageFocus_(nextStage, profile, blueprint, completedAnswers) : null;
+  const history = compactHistory_(previousAnswers, 14);
+
+  const prompt = `You are evaluating one answer in a structured mock interview. Do not change the interview order.
 
 CANDIDATE PROFILE:
-${JSON.stringify(body.profile || {})}
+${JSON.stringify(profile)}
 
-INTERVIEW BLUEPRINT:
-${JSON.stringify(blueprint)}
-
-JOB DESCRIPTION:
-${cleanText_(body.jdText, 18000)}
-
-PREVIOUS QUESTIONS AND ANSWERS:
-${JSON.stringify(history)}
-
-CURRENT QUESTION NUMBER: ${questionNumber}
 CURRENT QUESTION:
 ${JSON.stringify(currentQuestion)}
 
 CURRENT ANSWER:
 ${transcript}
 
-POLICY: minimum ${policy.minQuestions}, target ${policy.targetQuestions}, maximum ${policy.maxQuestions}.
+PREVIOUS INTERVIEW HISTORY:
+${JSON.stringify(history)}
+
+NEXT REQUIRED SECTION:
+${nextStage ? nextStage.label : 'INTERVIEW COMPLETE'}
+
+NEXT REQUIRED FOCUS:
+${JSON.stringify(nextFocus || {})}
 
 Return strict JSON only:
 {
@@ -266,62 +311,266 @@ Return strict JSON only:
     "weakCompetencies": [""],
     "remainingCompetencies": [""]
   },
-  "decision": {
-    "shouldFinish": false,
-    "reason": "",
-    "nextQuestion": {
-      "question": "",
-      "category": "motivation|behavioural|technical|role-fit|closing",
-      "competency": "",
-      "purpose": "",
-      "isFollowUp": false
-    }
+  "followUp": {
+    "needed": false,
+    "question": "",
+    "reason": ""
+  },
+  "nextCoreQuestion": {
+    "question": "",
+    "competency": ""
   }
 }
 
 Evaluation rules:
-- Scores are 1 to 5. Be constructive, specific and honest.
-- Improved responses may use only facts in the profile, CV evidence or candidate answer.
+- Scores are 1 to 5.
+- Be constructive, specific and evidence-based.
+- The improved response may use only facts from the profile, CV evidence or candidate answer.
 - Never invent metrics, employers, projects, qualifications or responsibilities.
 
-Adaptive interview rules:
-- Base the next question on the answer, CV and one specific JD requirement.
-- If the answer is vague, ask one short follow-up about the single most important missing detail.
-- If the candidate mentions a useful claim, ask one direct question about that claim.
-- Never ask consecutive follow-ups about the same answer.
-- Avoid repeated or lightly reworded questions.
-- Do not ask more than two questions on one competency unless it is critical and still weak.
-- Do not reveal coaching feedback in the next question.
-- Never finish before ${policy.minQuestions}; finish at ${policy.maxQuestions}.
-- Around ${policy.targetQuestions}, finish only if critical and high-priority competencies have reasonable coverage.
+Follow-up rules:
+- Suggest a follow-up only when one important claim needs clarification or one crucial detail is missing.
+- Ask about one detail only.
+- Do not suggest a follow-up when the current question is already a follow-up.
+- Do not use a follow-up merely because the answer could be better; record that in feedback instead.
+
+Next core question rules:
+- Generate it only for the exact NEXT REQUIRED SECTION and NEXT REQUIRED FOCUS supplied above.
+- Do not return to the current topic unless the supplied focus explicitly requires it.
+- For behavioural questions, ask for one example involving the named competency.
+- For CV discussion, use the named CV area only.
+- For role fit, use the named JD requirement only.
+- For contribution, ask how the candidate would help the organisation or team.
+- For career history, use neutral wording and only the supplied career signal.
+- For closing, ask why this role is the right next step.
 ${QUESTION_RULES}`;
 
   const result = callGroqJson_(prompt);
   const evaluation = normaliseEvaluation_(result.evaluation || result);
   const coverage = normaliseCoverage_(result.coverage);
-  const decision = result.decision || {};
+  const totalQuestions = completedAnswers.length;
+  const remainingCore = remainingCoreCount_(blueprint, completedAnswers);
 
-  let shouldFinish = Boolean(decision.shouldFinish);
-  if (questionNumber < policy.minQuestions) shouldFinish = false;
-  if (questionNumber >= policy.maxQuestions) shouldFinish = true;
-  if (questionNumber < policy.targetQuestions &&
-      coverage.remainingCompetencies.length + coverage.weakCompetencies.length > 0) {
-    shouldFinish = false;
-  }
+  const followUpAllowed = canAskFollowUp_(
+    currentQuestion,
+    completedAnswers,
+    result.followUp,
+    policy,
+    remainingCore
+  );
 
-  let nextQuestion = decision.nextQuestion;
-  if (!shouldFinish && !isQuestion_(nextQuestion)) {
-    nextQuestion = fallbackNextQuestion_(blueprint, currentQuestion, history);
+  let nextQuestion = null;
+  if (followUpAllowed) {
+    nextQuestion = normaliseQuestion_({
+      question: result.followUp.question,
+      category: currentQuestion.category,
+      competency: currentQuestion.competency,
+      purpose: result.followUp.reason || 'Clarify one important part of the previous answer.',
+      stage: currentQuestion.stage,
+      stageLabel: currentQuestion.stageLabel,
+      focusKey: currentQuestion.focusKey,
+      isFollowUp: true
+    });
+  } else if (nextStage && totalQuestions < policy.maxQuestions) {
+    const generated = result.nextCoreQuestion || {};
+    nextQuestion = normaliseQuestion_({
+      question: generated.question || fallbackQuestion_(nextStage, nextFocus, profile, blueprint),
+      category: categoryForStage_(nextStage.id),
+      competency: generated.competency || nextFocus.name || nextStage.label,
+      purpose: nextFocus.instruction || '',
+      stage: nextStage.id,
+      stageLabel: nextStage.label,
+      focusKey: nextFocus.key,
+      isFollowUp: false
+    });
   }
-  if (!shouldFinish) nextQuestion = normaliseQuestion_(nextQuestion);
 
   return {
     evaluation: evaluation,
     coverage: coverage,
-    shouldFinish: shouldFinish,
-    finishReason: String(decision.reason || ''),
-    nextQuestion: shouldFinish ? null : nextQuestion
+    shouldFinish: !nextQuestion,
+    finishReason: !nextQuestion ? 'The structured interview plan is complete.' : '',
+    nextQuestion: nextQuestion
   };
+}
+
+function canAskFollowUp_(currentQuestion, completedAnswers, followUp, policy, remainingCore) {
+  if (!followUp || !followUp.needed || !isQuestion_({ question: followUp.question })) return false;
+  if (currentQuestion.isFollowUp) return false;
+  if (['background', 'behavioural', 'resume', 'job_fit'].indexOf(currentQuestion.stage) === -1) return false;
+
+  const totalFollowUps = completedAnswers.filter(function(answer) { return Boolean(answer.isFollowUp); }).length;
+  const stageFollowUps = completedAnswers.filter(function(answer) {
+    return Boolean(answer.isFollowUp) && answer.stage === currentQuestion.stage;
+  }).length;
+
+  if (totalFollowUps >= CONFIG.MAX_FOLLOWUPS) return false;
+  if (stageFollowUps >= CONFIG.MAX_FOLLOWUPS_PER_STAGE) return false;
+  return completedAnswers.length + remainingCore + 1 <= policy.maxQuestions;
+}
+
+function getNextStage_(blueprint, answers) {
+  const counts = stageCoreCounts_(answers);
+  for (let i = 0; i < STAGE_SEQUENCE.length; i++) {
+    const stage = STAGE_SEQUENCE[i];
+    if (stage.conditional && !careerClarificationNeeded_(blueprint)) continue;
+    if ((counts[stage.id] || 0) < stage.quota) return stage;
+  }
+  return null;
+}
+
+function selectStageFocus_(stage, profile, blueprint, answers) {
+  const used = answers.filter(function(answer) {
+    return !answer.isFollowUp && answer.stage === stage.id;
+  }).map(function(answer) { return String(answer.focusKey || ''); });
+
+  if (stage.id === 'introduction') {
+    return { key: 'introduction', name: 'professional introduction', instruction: 'Relate the introduction to the target role.' };
+  }
+
+  if (stage.id === 'background') {
+    if (used.indexOf('current_scope') === -1) {
+      return {
+        key: 'current_scope',
+        name: 'current responsibilities',
+        evidence: profile.currentRole || profile.experienceSummary,
+        instruction: 'Ask what the candidate currently does and owns.'
+      };
+    }
+    return {
+      key: 'career_progression',
+      name: 'career progression',
+      evidence: profile.experienceSummary,
+      instruction: 'Ask how the candidate developed towards this opportunity.'
+    };
+  }
+
+  if (stage.id === 'behavioural') {
+    return firstUnusedObject_(blueprint.behaviouralCompetencies, used, {
+      key: 'problem_solving',
+      name: 'problem-solving',
+      whyRelevant: 'Relevant to most professional roles.'
+    }, 'whyRelevant');
+  }
+
+  if (stage.id === 'resume') {
+    return firstUnusedObject_(blueprint.resumeAreas, used, {
+      key: 'relevant_achievement',
+      name: 'a relevant achievement',
+      evidence: profile.experienceSummary
+    }, 'evidence');
+  }
+
+  if (stage.id === 'job_fit') {
+    return firstUnusedObject_(blueprint.jdRequirements, used, {
+      key: 'key_requirement',
+      name: 'a key role requirement',
+      evidence: (blueprint.roleRequirements || [])[0] || ''
+    }, 'evidence');
+  }
+
+  if (stage.id === 'contribution') {
+    return {
+      key: 'company_contribution',
+      name: 'value to the organisation',
+      evidence: profile.organisation || profile.targetRole,
+      instruction: 'Ask how the candidate would help the team or organisation.'
+    };
+  }
+
+  if (stage.id === 'career_clarification') {
+    const signal = blueprint.careerSignals || {};
+    return {
+      key: 'career_' + (signal.type || 'clarification'),
+      name: 'career history clarification',
+      evidence: signal.evidence || '',
+      instruction: signal.neutralFocus || 'Ask for a brief, neutral explanation of the identified career pattern.'
+    };
+  }
+
+  return {
+    key: 'closing_next_step',
+    name: 'motivation for the next step',
+    evidence: profile.targetRole,
+    instruction: 'Ask why this opportunity is the right next step.'
+  };
+}
+
+function firstUnusedObject_(items, used, fallback, evidenceField) {
+  items = Array.isArray(items) ? items : [];
+  let chosen = items.find(function(item) { return used.indexOf(String(item.key || '')) === -1; });
+  if (!chosen) chosen = items[0] || fallback;
+  return {
+    key: chosen.key || slug_(chosen.name || fallback.name),
+    name: chosen.name || fallback.name,
+    evidence: chosen[evidenceField] || chosen.evidence || '',
+    instruction: chosen.whyRelevant || chosen.evidence || ''
+  };
+}
+
+function fallbackQuestion_(stage, focus, profile, blueprint) {
+  focus = focus || {};
+  if (stage.id === 'background' && focus.key === 'current_scope') {
+    return 'What are your main responsibilities in your current role?';
+  }
+  if (stage.id === 'background') return 'How has your experience prepared you for this role?';
+  if (stage.id === 'behavioural') return 'Tell me about a time you demonstrated ' + (focus.name || 'problem-solving') + '.';
+  if (stage.id === 'resume') return 'What did you achieve through ' + (focus.name || 'this experience') + '?';
+  if (stage.id === 'job_fit') return 'What experience do you have with ' + (focus.name || 'this requirement') + '?';
+  if (stage.id === 'contribution') {
+    return profile.organisation
+      ? 'How would you add value to ' + profile.organisation + '?'
+      : 'How would you add value to this team?';
+  }
+  if (stage.id === 'career_clarification') {
+    const type = blueprint.careerSignals && blueprint.careerSignals.type;
+    if (type === 'employment_gap') return 'Could you briefly explain the gap in your employment history?';
+    if (type === 'frequent_moves') return 'What influenced your recent job changes?';
+    if (type === 'career_change') return 'What motivated your career change?';
+    return 'Could you briefly explain this part of your career history?';
+  }
+  if (stage.id === 'closing') return 'Why is this role the right next step for you?';
+  return 'Please introduce yourself in relation to this role.';
+}
+
+function requiredCoreCount_(blueprint) {
+  return STAGE_SEQUENCE.reduce(function(total, stage) {
+    if (stage.conditional && !careerClarificationNeeded_(blueprint)) return total;
+    return total + stage.quota;
+  }, 0);
+}
+
+function remainingCoreCount_(blueprint, answers) {
+  const counts = stageCoreCounts_(answers);
+  return STAGE_SEQUENCE.reduce(function(total, stage) {
+    if (stage.conditional && !careerClarificationNeeded_(blueprint)) return total;
+    return total + Math.max(0, stage.quota - (counts[stage.id] || 0));
+  }, 0);
+}
+
+function stageCoreCounts_(answers) {
+  return (answers || []).reduce(function(counts, answer) {
+    if (!answer.isFollowUp && answer.stage) counts[answer.stage] = (counts[answer.stage] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function careerClarificationNeeded_(blueprint) {
+  return Boolean(blueprint && blueprint.careerSignals && blueprint.careerSignals.clarificationNeeded);
+}
+
+function categoryForStage_(stage) {
+  const map = {
+    introduction: 'introduction',
+    background: 'background',
+    behavioural: 'behavioural',
+    resume: 'resume',
+    job_fit: 'role-fit',
+    contribution: 'contribution',
+    career_clarification: 'career-history',
+    closing: 'closing'
+  };
+  return map[stage] || 'role-fit';
 }
 
 function finaliseReportWithGemini_(body) {
@@ -333,6 +582,7 @@ function finaliseReportWithGemini_(body) {
   const reportAnswers = answers.map(function(answer, index) {
     return {
       number: index + 1,
+      stage: cleanText_(answer.stageLabel || answer.stage, 100),
       question: cleanText_(answer.question, 1000),
       category: cleanText_(answer.category, 120),
       competency: cleanText_(answer.competency, 200),
@@ -341,7 +591,7 @@ function finaliseReportWithGemini_(body) {
     };
   });
 
-  const prompt = `Create a detailed personal interview preparation report from this adaptive mock interview. Be constructive, specific and evidence-based. Never invent experience, responsibilities or results.
+  const prompt = `Create a detailed personal interview preparation report from this structured mock interview. Be constructive, specific and evidence-based. Never invent experience, responsibilities or results.
 
 PROFILE:
 ${JSON.stringify(body.profile || {})}
@@ -352,10 +602,7 @@ ${JSON.stringify(body.blueprint || {})}
 JOB DESCRIPTION:
 ${cleanText_(body.jdText, 20000)}
 
-FINAL COMPETENCY COVERAGE:
-${JSON.stringify(body.coverage || {})}
-
-ANSWER REVIEWS:
+ANSWER REVIEWS BY INTERVIEW SECTION:
 ${JSON.stringify(reportAnswers)}
 
 Return strict JSON only:
@@ -372,9 +619,9 @@ Return strict JSON only:
 
 Rules:
 - Overall is 0 to 100; other scores are 1 to 5.
-- Reflect the full interview, not only the final answer.
+- Reflect performance across all completed interview sections.
 - Give 3 to 6 practical items in strengths, improvements and practicePlan.
-- Identify patterns such as generic answers, missing results, weak role evidence, repetition or strong examples.
+- Identify repeated examples, generic answers, missing results, weak role evidence and strong evidence.
 - Help the candidate prepare genuine answers rather than memorise invented claims.`;
 
   const report = callGeminiJson_(prompt);
@@ -387,7 +634,6 @@ function callGeminiJson_(prompt) {
   const key = requiredProperty_('GEMINI_API_KEY');
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
     encodeURIComponent(CONFIG.GEMINI_MODEL) + ':generateContent?key=' + encodeURIComponent(key);
-
   const response = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
@@ -397,7 +643,6 @@ function callGeminiJson_(prompt) {
     }),
     muteHttpExceptions: true
   });
-
   const parsed = parseHttpJson_(response, 'Gemini');
   const candidate = parsed.candidates && parsed.candidates[0];
   const parts = candidate && candidate.content && candidate.content.parts;
@@ -414,7 +659,10 @@ function callGroqJson_(prompt) {
     payload: JSON.stringify({
       model: CONFIG.GROQ_TEXT_MODEL,
       messages: [
-        { role: 'system', content: 'You are a concise professional interviewer. Follow every output-format and question-length rule exactly.' },
+        {
+          role: 'system',
+          content: 'You are a concise professional interviewer. Follow the supplied interview stage and output format exactly.'
+        },
         { role: 'user', content: prompt }
       ],
       reasoning_effort: 'low',
@@ -422,11 +670,88 @@ function callGroqJson_(prompt) {
     }),
     muteHttpExceptions: true
   });
-
   const parsed = parseHttpJson_(response, 'Groq interview review');
   const text = parsed.choices && parsed.choices[0] && parsed.choices[0].message &&
     parsed.choices[0].message.content;
   return parseJsonText_(text);
+}
+
+function normaliseProfile_(value) {
+  value = value || {};
+  return {
+    candidateName: cleanText_(value.candidateName, 150),
+    targetRole: cleanText_(value.targetRole, 180),
+    organisation: cleanText_(value.organisation, 180),
+    currentRole: cleanText_(value.currentRole, 220),
+    experienceSummary: cleanText_(value.experienceSummary, 2500),
+    skills: stringArray_(value.skills, 20),
+    evidence: stringArray_(value.evidence, 20)
+  };
+}
+
+function normaliseBlueprint_(value) {
+  value = value || {};
+  const roleRequirements = stringArray_(value.roleRequirements, 12);
+  const behavioural = objectArray_(value.behaviouralCompetencies, 8, 'behavioural');
+  const resumeAreas = objectArray_(value.resumeAreas, 8, 'resume');
+  let jdRequirements = objectArray_(value.jdRequirements, 8, 'requirement');
+
+  if (jdRequirements.length < 2) {
+    jdRequirements = roleRequirements.slice(0, 6).map(function(name, index) {
+      return { key: 'requirement_' + (index + 1), name: name, evidence: name, priority: index < 2 ? 'high' : 'standard' };
+    });
+  }
+
+  const defaults = [
+    { key: 'problem_solving', name: 'problem-solving', whyRelevant: '' },
+    { key: 'teamwork', name: 'teamwork', whyRelevant: '' },
+    { key: 'communication', name: 'communication', whyRelevant: '' },
+    { key: 'prioritisation', name: 'prioritisation', whyRelevant: '' },
+    { key: 'adaptability', name: 'adaptability', whyRelevant: '' }
+  ];
+  defaults.forEach(function(item) {
+    if (behavioural.length < 5 && !behavioural.some(function(existing) { return existing.key === item.key; })) {
+      behavioural.push(item);
+    }
+  });
+
+  const signal = value.careerSignals || {};
+  const allowedTypes = ['none', 'employment_gap', 'frequent_moves', 'career_change'];
+  const type = allowedTypes.indexOf(signal.type) >= 0 ? signal.type : 'none';
+
+  return {
+    roleRequirements: roleRequirements,
+    behaviouralCompetencies: behavioural.slice(0, 8),
+    resumeAreas: resumeAreas.slice(0, 8),
+    jdRequirements: jdRequirements.slice(0, 8),
+    careerSignals: {
+      clarificationNeeded: Boolean(signal.clarificationNeeded) && type !== 'none',
+      type: type,
+      evidence: cleanText_(signal.evidence, 800),
+      neutralFocus: cleanText_(signal.neutralFocus, 500)
+    }
+  };
+}
+
+function objectArray_(value, max, prefix) {
+  if (!Array.isArray(value)) return [];
+  const seen = {};
+  return value.map(function(item, index) {
+    item = item || {};
+    const name = cleanText_(item.name || item.title, 240);
+    if (!name) return null;
+    let key = cleanText_(item.key, 100) || slug_(name) || prefix + '_' + (index + 1);
+    if (seen[key]) key += '_' + (index + 1);
+    seen[key] = true;
+    return {
+      key: key,
+      name: name,
+      whyRelevant: cleanText_(item.whyRelevant, 700),
+      employerOrContext: cleanText_(item.employerOrContext, 300),
+      evidence: cleanText_(item.evidence, 1000),
+      priority: cleanText_(item.priority, 30) || 'standard'
+    };
+  }).filter(Boolean).slice(0, max);
 }
 
 function normalisePolicy_(source) {
@@ -448,10 +773,10 @@ function normaliseQuestion_(value) {
 
   const firstQuestionMark = question.indexOf('?');
   if (firstQuestionMark >= 0) question = question.slice(0, firstQuestionMark + 1);
+  let words = question.replace(/[?]$/, '').split(/\s+/).filter(Boolean);
 
-  let words = question.replace(/\?$/, '').split(/\s+/).filter(Boolean);
   if (words.length > CONFIG.MAX_QUESTION_WORDS) {
-    const firstClause = question.replace(/\?$/, '').split(/,|;|\band\b/i)[0].trim();
+    const firstClause = question.replace(/[?]$/, '').split(/,|;|\band\b/i)[0].trim();
     const clauseWords = firstClause.split(/\s+/).filter(Boolean);
     words = clauseWords.length >= 5 && clauseWords.length <= CONFIG.MAX_QUESTION_WORDS
       ? clauseWords
@@ -461,13 +786,22 @@ function normaliseQuestion_(value) {
     question = question.replace(/[.!]+$/, '') + '?';
   }
 
+  const stage = cleanText_(value.stage, 80) || 'job_fit';
   return {
     question: question,
-    category: cleanText_(value.category, 100) || 'role-fit',
+    category: cleanText_(value.category, 100) || categoryForStage_(stage),
     competency: cleanText_(value.competency, 180) || 'role suitability',
     purpose: cleanText_(value.purpose, 500),
+    stage: stage,
+    stageLabel: cleanText_(value.stageLabel, 100) || stageLabelById_(stage),
+    focusKey: cleanText_(value.focusKey, 120) || stage,
     isFollowUp: Boolean(value.isFollowUp)
   };
+}
+
+function stageLabelById_(id) {
+  const match = STAGE_SEQUENCE.find(function(stage) { return stage.id === id; });
+  return match ? match.label : id;
 }
 
 function normaliseEvaluation_(value) {
@@ -495,34 +829,16 @@ function normaliseCoverage_(value) {
 }
 
 function compactHistory_(answers, limit) {
-  return answers.slice(Math.max(0, answers.length - limit)).map(function(answer, index) {
+  return (answers || []).slice(Math.max(0, answers.length - limit)).map(function(answer, index) {
     return {
       number: answers.length - Math.min(answers.length, limit) + index + 1,
+      stage: cleanText_(answer.stage, 80),
+      focusKey: cleanText_(answer.focusKey, 120),
       question: cleanText_(answer.question, 500),
-      category: cleanText_(answer.category, 100),
       competency: cleanText_(answer.competency, 180),
       isFollowUp: Boolean(answer.isFollowUp),
-      transcript: cleanText_(answer.transcript, 3500),
-      scores: answer.evaluation && answer.evaluation.scores ? answer.evaluation.scores : {}
+      transcript: cleanText_(answer.transcript, 3500)
     };
-  });
-}
-
-function fallbackNextQuestion_(blueprint, currentQuestion, history) {
-  const competencies = blueprint && Array.isArray(blueprint.competencies)
-    ? blueprint.competencies : [];
-  const used = history.map(function(item) { return String(item.competency || '').toLowerCase(); });
-  let chosen = competencies.find(function(item) {
-    return item && item.name && used.indexOf(String(item.name).toLowerCase()) === -1;
-  });
-  if (!chosen) chosen = competencies[0] || { name: 'role suitability', whyItMatters: '' };
-
-  return normaliseQuestion_({
-    question: 'What is your strongest example of ' + chosen.name + '?',
-    category: 'role-fit',
-    competency: chosen.name || 'role suitability',
-    purpose: chosen.whyItMatters || 'Assess evidence relevant to the role.',
-    isFollowUp: false
   });
 }
 
@@ -533,6 +849,10 @@ function isQuestion_(value) {
 function stringArray_(value, max) {
   if (!Array.isArray(value)) return [];
   return value.map(function(item) { return cleanText_(item, 1000); }).filter(Boolean).slice(0, max);
+}
+
+function slug_(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 80);
 }
 
 function clampNumber_(value, min, max, fallback) {
